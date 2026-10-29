@@ -8,6 +8,7 @@
  */
 
 import type { Logger } from 'pino';
+import { getCommandAuth } from './client.js';
 import type { DAVCalendar, DAVCalendarObject } from 'tsdav';
 import type { DAVClientType } from './client.js';
 import type { Config } from '../config/schema.js';
@@ -78,6 +79,10 @@ export class CalendarService {
    * @returns Record with the appropriate authorization header
    */
   getAuthHeaders(): Record<string, string> {
+    if (this.config.DAV_AUTH_METHOD === 'command') {
+      // Shared mutable object, kept fresh by the client proxy (see caldav/client.ts)
+      return getCommandAuth(this.config).headers;
+    }
     if (this.config.DAV_AUTH_METHOD === 'bearer') {
       return { authorization: `Bearer ${this.config.DAV_TOKEN}` };
     }

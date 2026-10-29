@@ -8,12 +8,51 @@
  * - basic: Standard Basic Auth (username/password)
  * - bearer: JWT Bearer token (Authorization: Bearer <token>)
  * - esntoken: OpenPaaS ESNToken header (ESNToken: <token>)
+ * - command: Bearer token from DAV_TOKEN_COMMAND, refreshed before each call
  */
 
 import { createDAVClient } from 'tsdav';
 import type { Config } from '../config/schema.js';
 import type { Logger } from '../config/logger.js';
 import { discoverCalendars, discoverAddressBooks } from './discovery.js';
+import { CommandTokenProvider } from './token-command.js';
+
+/**
+ * Command auth (DAV_AUTH_METHOD=command).
+ *
+ * tsdav computes auth headers once, at client creation, and keeps a reference
+ * to that object for every later request. We hand it one shared, mutable
+ * headers object and refresh its `authorization` value before each client call
+ * (see withFreshToken), so short-lived OIDC access tokens never go stale.
+ */
+let commandAuth: { provider: CommandTokenProvider; headers: Record<string, string> } | null = null;
+
+export function getCommandAuth(config: Config) {
+  if (!commandAuth) {
+    commandAuth = { provider: new CommandTokenProvider(config.DAV_TOKEN_COMMAND!), headers: {} };
+  }
+  return commandAuth;
+}
+
+export async function refreshCommandHeaders(config: Config): Promise<Record<string, string>> {
+  const auth = getCommandAuth(config);
+  auth.headers.authorization = 'Bearer ' + (await auth.provider.getToken());
+  return auth.headers;
+}
+
+function withFreshToken(client: DAVClientType, config: Config): DAVClientType {
+  if (config.DAV_AUTH_METHOD !== 'command') return client;
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function') return value;
+      return async (...args: unknown[]) => {
+        await refreshCommandHeaders(config);
+        return (value as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+}
 
 /**
  * Type for the DAV client returned by tsdav
@@ -40,6 +79,13 @@ export interface DualClients {
  * - esntoken: ESNToken: <token>
  */
 function getAuthConfig(config: Config) {
+  if (config.DAV_AUTH_METHOD === 'command') {
+    return {
+      authMethod: 'Custom' as const,
+      credentials: { username: '', password: '' },
+      authFunction: async () => refreshCommandHeaders(config),
+    };
+  }
   if (config.DAV_AUTH_METHOD === 'bearer') {
     return {
       authMethod: 'Custom' as const,
@@ -69,12 +115,12 @@ function getAuthConfig(config: Config) {
  * @param config - Validated configuration
  * @returns Configured CalDAV client
  */
-export function createCalDAVClient(config: Config): Promise<DAVClientType> {
-  return createDAVClient({
+export async function createCalDAVClient(config: Config): Promise<DAVClientType> {
+  return withFreshToken(await createDAVClient({
     serverUrl: config.DAV_URL,
     ...getAuthConfig(config),
     defaultAccountType: 'caldav',
-  });
+  }), config);
 }
 
 /**
@@ -83,12 +129,12 @@ export function createCalDAVClient(config: Config): Promise<DAVClientType> {
  * @param config - Validated configuration
  * @returns Configured CardDAV client
  */
-export function createCardDAVClient(config: Config): Promise<DAVClientType> {
-  return createDAVClient({
+export async function createCardDAVClient(config: Config): Promise<DAVClientType> {
+  return withFreshToken(await createDAVClient({
     serverUrl: config.DAV_URL,
     ...getAuthConfig(config),
     defaultAccountType: 'carddav',
-  });
+  }), config);
 }
 
 /**

@@ -26,6 +26,7 @@ import { z } from 'zod';
  * - basic (default): DAV_USERNAME + DAV_PASSWORD required
  * - bearer: DAV_TOKEN required (JWT Bearer token)
  * - esntoken: DAV_TOKEN required (OpenPaaS ESNToken)
+ * - command: DAV_TOKEN_COMMAND required (prints a fresh Bearer access token)
  */
 export const envSchema = z.object({
   DAV_URL: z
@@ -44,10 +45,12 @@ export const envSchema = z.object({
         message: 'URL must use HTTPS. Only localhost is allowed over HTTP for development.',
       }
     ),
-  DAV_AUTH_METHOD: z.enum(['basic', 'bearer', 'esntoken']).default('basic'),
+  DAV_AUTH_METHOD: z.enum(['basic', 'bearer', 'esntoken', 'command']).default('basic'),
   DAV_USERNAME: z.string().optional(),
   DAV_PASSWORD: z.string().optional(),
   DAV_TOKEN: z.string().optional(),
+  // command auth: shell command printing an access token (raw or JSON {access_token, expires_at})
+  DAV_TOKEN_COMMAND: z.string().optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   DAV_DEFAULT_CALENDAR: z.string().optional(),
   DAV_DEFAULT_ADDRESSBOOK: z.string().optional(),
@@ -66,6 +69,14 @@ export const envSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['DAV_PASSWORD'],
         message: 'DAV_PASSWORD is required when using basic auth',
+      });
+    }
+  } else if (data.DAV_AUTH_METHOD === 'command') {
+    if (!data.DAV_TOKEN_COMMAND) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['DAV_TOKEN_COMMAND'],
+        message: 'DAV_TOKEN_COMMAND is required when using command auth',
       });
     }
   } else {
