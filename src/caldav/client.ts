@@ -16,6 +16,7 @@ import type { Config } from '../config/schema.js';
 import type { Logger } from '../config/logger.js';
 import { discoverCalendars, discoverAddressBooks } from './discovery.js';
 import { CommandTokenProvider } from './token-command.js';
+import { installHrefPrefix } from './href-prefix.js';
 
 /**
  * Command auth (DAV_AUTH_METHOD=command).
@@ -146,6 +147,10 @@ export async function createCardDAVClient(config: Config): Promise<DAVClientType
  */
 export async function createDualClients(config: Config, logger: Logger): Promise<DualClients> {
   logger.info({ url: config.DAV_URL }, 'Creating CalDAV and CardDAV clients...');
+  if (config.DAV_HREF_PREFIX) {
+    installHrefPrefix(config.DAV_URL, config.DAV_HREF_PREFIX);
+    logger.info({ prefix: config.DAV_HREF_PREFIX }, 'DAV href prefix rewriting enabled');
+  }
 
   const [caldav, carddav] = await Promise.all([
     createCalDAVClient(config),
@@ -170,6 +175,7 @@ export async function createDualClients(config: Config, logger: Logger): Promise
 export async function validateConnection(config: Config, logger: Logger): Promise<DAVClientType> {
   logger.info({ url: config.DAV_URL }, 'Testing CalDAV/CardDAV connection...');
 
+  if (config.DAV_HREF_PREFIX) installHrefPrefix(config.DAV_URL, config.DAV_HREF_PREFIX);
   const client = await createCalDAVClient(config);
 
   // Create a 10-second timeout promise

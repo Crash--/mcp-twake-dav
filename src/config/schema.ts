@@ -51,6 +51,8 @@ export const envSchema = z.object({
   DAV_TOKEN: z.string().optional(),
   // command auth: shell command printing an access token (raw or JSON {access_token, expires_at})
   DAV_TOKEN_COMMAND: z.string().optional(),
+  // Path prefix stripped by a reverse proxy (e.g. /dav for OpenPaaS): re-added to multistatus hrefs
+  DAV_HREF_PREFIX: z.string().optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   DAV_DEFAULT_CALENDAR: z.string().optional(),
   DAV_DEFAULT_ADDRESSBOOK: z.string().optional(),
