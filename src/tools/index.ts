@@ -74,7 +74,12 @@ export function registerAllTools(
   defaultCalendar?: string,
   defaultAddressBook?: string,
   userTimezone?: string,
-  config?: { DAV_USERNAME?: string },
+  config?: {
+    DAV_USERNAME?: string;
+    DAV_ORGANIZER_EMAIL?: string;
+    DAV_ORGANIZER_NAME?: string;
+    DAV_RECURRING_WRITES?: 'true' | 'false';
+  },
 ): void {
   // Register calendar query tools (Phase 4)
   registerNextEventTool(server, calendarService, logger, defaultCalendar, userTimezone);
@@ -83,9 +88,13 @@ export function registerAllTools(
   registerSearchEventsTool(server, calendarService, logger, defaultCalendar, userTimezone);
 
   // Register calendar write tools (Phase 9)
-  registerDeleteEventTool(server, calendarService, logger, defaultCalendar);
-  registerCreateEventTool(server, calendarService, logger, defaultCalendar, userTimezone);
-  registerUpdateEventTool(server, calendarService, logger, defaultCalendar);
+  const recurringWrites = config?.DAV_RECURRING_WRITES !== 'false';
+  const organizer = config?.DAV_ORGANIZER_EMAIL
+    ? { email: config.DAV_ORGANIZER_EMAIL, name: config.DAV_ORGANIZER_NAME }
+    : undefined;
+  registerDeleteEventTool(server, calendarService, logger, defaultCalendar, recurringWrites);
+  registerCreateEventTool(server, calendarService, logger, defaultCalendar, userTimezone, organizer);
+  registerUpdateEventTool(server, calendarService, logger, defaultCalendar, recurringWrites);
 
   // Register check_availability tool (Phase 11)
   registerCheckAvailabilityTool(server, calendarService, logger, defaultCalendar, userTimezone);

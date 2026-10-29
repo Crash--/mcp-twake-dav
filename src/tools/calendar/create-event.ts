@@ -26,10 +26,14 @@ export function registerCreateEventTool(
   logger: Logger,
   defaultCalendar?: string,
   userTimezone?: string,
+  organizer?: { email: string; name?: string },
 ): void {
   server.tool(
     'create_event',
-    'Create a new calendar event. Supports natural language dates (e.g., \'tomorrow at 2pm\', \'next Monday\'). IMPORTANT: Confirm with the user before proceeding. Summarize the event details (title, start, end, location) and ask the user to confirm before creating.',
+    'Create a new calendar event. Supports natural language dates (e.g., \'tomorrow at 2pm\', \'next Monday\'). ' +
+    'IMPORTANT: if the user did not say who should attend, ASK who to invite before calling this tool (no answer or "nobody" means no attendees). ' +
+    'Resolve names to email addresses with search_contacts and never guess an address. ' +
+    'Attendees receive an invitation email sent by the calendar server on behalf of the organizer, so summarize the event (title, start, end, location, attendees with emails) and ask the user to confirm before creating.',
     {
       title: z.string().describe('Event title/summary'),
       start: z.string().describe('Start date/time. Supports natural language (e.g., "tomorrow at 2pm", "next Monday at 10am") or ISO 8601 format.'),
@@ -42,6 +46,15 @@ export function registerCreateEventTool(
       ),
       allDay: z.boolean().optional().describe('If true, creates an all-day event (DATE format instead of DATE-TIME)'),
       recurrence: z.string().optional().describe('RRULE recurrence string (e.g., "FREQ=WEEKLY;BYDAY=MO", "FREQ=DAILY;COUNT=5")'),
+      attendees: z
+        .array(
+          z.object({
+            email: z.string().email().describe('Attendee email address'),
+            name: z.string().optional().describe('Attendee display name'),
+          })
+        )
+        .optional()
+        .describe('People to invite. They will receive an invitation email. Omit for an event without attendees.'),
     },
     {
       readOnlyHint: false,
@@ -94,6 +107,20 @@ export function registerCreateEventTool(
           };
         }
 
+        // Attendees require a configured organizer
+        const attendees = params.attendees ?? [];
+        if (attendees.length > 0 && !organizer) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Cannot invite attendees: no organizer configured. Set DAV_ORGANIZER_EMAIL (and optionally DAV_ORGANIZER_NAME).',
+              },
+            ],
+            isError: true,
+          };
+        }
+
         // Resolve target calendar
         const resolvedCalendar = params.calendar || defaultCalendar;
 
@@ -107,6 +134,8 @@ export function registerCreateEventTool(
           allDay: params.allDay,
           recurrence: params.recurrence,
           timezone: userTimezone,
+          organizer,
+          attendees,
         });
 
         // Create event
@@ -120,6 +149,9 @@ export function registerCreateEventTool(
         const locationText = params.location ? `\nLocation: ${params.location}` : '';
         const descriptionText = params.description ? `\nDescription: ${params.description}` : '';
         const recurrenceText = params.recurrence ? `\nRecurrence: ${params.recurrence}` : '';
+        const attendeesText = attendees.length > 0
+          ? `\nAttendees (invitation sent by the server): ${attendees.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(', ')}`
+          : '';
 
         const responseText = [
           `Event created successfully${calendarText}:`,
@@ -129,6 +161,7 @@ export function registerCreateEventTool(
           locationText,
           descriptionText,
           recurrenceText,
+          attendeesText,
           `\nEvent URL: ${result.url}`,
         ]
           .filter(line => line !== '')

@@ -144,6 +144,10 @@ export interface CreateEventInput {
   calendar?: string;
   /** Timezone for the event (e.g., "Europe/Paris") - dates will be stored in UTC */
   timezone?: string;
+  /** Organizer (required when attendees are given) */
+  organizer?: { email: string; name?: string };
+  /** Attendees: the calendar server sends them an invitation (iTIP/iMIP) */
+  attendees?: Array<{ email: string; name?: string }>;
 }
 
 /**

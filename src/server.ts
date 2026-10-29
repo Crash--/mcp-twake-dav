@@ -29,7 +29,12 @@ export function createServer(
   defaultCalendar?: string,
   defaultAddressBook?: string,
   userTimezone?: string,
-  config?: { DAV_USERNAME?: string },
+  config?: {
+    DAV_USERNAME?: string;
+    DAV_ORGANIZER_EMAIL?: string;
+    DAV_ORGANIZER_NAME?: string;
+    DAV_RECURRING_WRITES?: 'true' | 'false';
+  },
 ): McpServer {
   // Initialize MCP server
   const server = new McpServer({

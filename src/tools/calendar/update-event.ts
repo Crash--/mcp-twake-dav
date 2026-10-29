@@ -14,6 +14,12 @@ import { updateICalString, createExceptionVevent } from '../../transformers/even
 import * as chrono from 'chrono-node';
 import ICAL from 'ical.js';
 
+
+/** True when the event is a recurring series or an occurrence of one. */
+function isRecurringResource(event: { isRecurring: boolean; _raw: string }): boolean {
+  return event.isRecurring || /^(RRULE|RDATE|RECURRENCE-ID)[:;]/m.test(event._raw);
+}
+
 /**
  * Register the update_event tool
  *
@@ -27,6 +33,7 @@ export function registerUpdateEventTool(
   calendarService: CalendarService,
   logger: Logger,
   defaultCalendar?: string,
+  recurringWrites = true,
 ): void {
   server.tool(
     'update_event',
@@ -89,6 +96,19 @@ export function registerUpdateEventTool(
               {
                 type: 'text' as const,
                 text: `Event not found with UID: ${params.uid}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Recurring events are out of scope when DAV_RECURRING_WRITES=false
+        if (!recurringWrites && (params.instanceDate !== undefined || isRecurringResource(event))) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Cannot modify "${event.summary}": recurring events and their occurrences are not supported by this server configuration (DAV_RECURRING_WRITES=false). Ask the user to do it in the Twake Calendar web app.`,
               },
             ],
             isError: true,

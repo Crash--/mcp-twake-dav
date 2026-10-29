@@ -456,7 +456,50 @@ export class CalendarService {
    * @returns EventDTO with full data including _raw, etag, url, or null if not found
    */
   async findEventByUid(uid: string, calendarName?: string): Promise<EventDTO | null> {
-    // Fetch raw calendar objects
+    // 1. Server-side lookup: calendar-query with a UID prop-filter (RFC 4791 9.7.5).
+    //    Some servers (e.g. OpenPaaS / Twake Calendar) do not return every object
+    //    on an unfiltered full-collection query, so the client-side scan below
+    //    can miss events that do exist.
+    try {
+      await this.listCalendars();
+      const targets = calendarName
+        ? this.calendars.filter(
+            (cal) => String(cal.displayName || '').toLowerCase() === calendarName.toLowerCase()
+          )
+        : this.calendars;
+      const filters = [
+        {
+          'comp-filter': {
+            _attributes: { name: 'VCALENDAR' },
+            'comp-filter': {
+              _attributes: { name: 'VEVENT' },
+              'prop-filter': {
+                _attributes: { name: 'UID' },
+                'text-match': { _attributes: { collation: 'i;octet' }, _text: uid },
+              },
+            },
+          },
+        },
+      ];
+      for (const calendar of targets) {
+        const objects = await withRetry(
+          () => this.client.fetchCalendarObjects({ calendar, filters, useMultiGet: false } as any),
+          this.logger
+        );
+        for (const obj of objects) {
+          if (!obj.data) continue;
+          const eventDTO = transformCalendarObject(obj, this.logger);
+          if (eventDTO && eventDTO.uid === uid) {
+            this.logger.debug({ uid, url: eventDTO.url }, 'Found event by UID (server-side filter)');
+            return eventDTO;
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.warn({ err, uid }, 'Server-side UID lookup failed, falling back to full scan');
+    }
+
+    // 2. Fallback: fetch raw calendar objects
     const rawObjects = calendarName
       ? await this.fetchEventsByCalendarName(calendarName)
       : await this.fetchAllEvents();

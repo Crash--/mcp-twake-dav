@@ -53,6 +53,11 @@ export const envSchema = z.object({
   DAV_TOKEN_COMMAND: z.string().optional(),
   // Path prefix stripped by a reverse proxy (e.g. /dav for OpenPaaS): re-added to multistatus hrefs
   DAV_HREF_PREFIX: z.string().optional(),
+  // Organizer used when create_event invites attendees
+  DAV_ORGANIZER_EMAIL: z.string().email().optional(),
+  DAV_ORGANIZER_NAME: z.string().optional(),
+  // 'false' = update_event / delete_event refuse recurring events and occurrences
+  DAV_RECURRING_WRITES: z.enum(['true', 'false']).default('true'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   DAV_DEFAULT_CALENDAR: z.string().optional(),
   DAV_DEFAULT_ADDRESSBOOK: z.string().optional(),

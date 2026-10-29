@@ -61,6 +61,7 @@ async function testConnection(
     LOG_LEVEL: 'warn',
     DAV_DEFAULT_CALENDAR: undefined,
     DAV_DEFAULT_ADDRESSBOOK: undefined,
+    DAV_RECURRING_WRITES: 'true',
   };
 
   // Dynamic imports to avoid loading tsdav/pino at CLI startup

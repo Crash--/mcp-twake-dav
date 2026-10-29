@@ -101,7 +101,65 @@ export function buildICalString(input: CreateEventInput): string {
     vevent.updatePropertyWithValue('rrule', rrule);
   }
 
+  // Organizer + attendees (scheduling). The organizer is also listed as an
+  // ACCEPTED attendee, as Twake/OpenPaaS and most clients expect.
+  if (input.attendees && input.attendees.length > 0) {
+    if (!input.organizer) {
+      throw new Error('An organizer is required to invite attendees');
+    }
+    const organizer = new ICAL.Property('organizer');
+    organizer.setValue(`mailto:${input.organizer.email}`);
+    if (input.organizer.name) organizer.setParameter('cn', input.organizer.name);
+    vevent.addProperty(organizer);
+
+    const seen = new Set<string>();
+    const addAttendee = (a: { email: string; name?: string }, partstat: string, rsvp: boolean) => {
+      const key = a.email.trim().toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      const prop = new ICAL.Property('attendee');
+      prop.setValue(`mailto:${a.email.trim()}`);
+      if (a.name) prop.setParameter('cn', a.name);
+      prop.setParameter('cutype', 'INDIVIDUAL');
+      prop.setParameter('role', 'REQ-PARTICIPANT');
+      prop.setParameter('partstat', partstat);
+      if (rsvp) prop.setParameter('rsvp', 'TRUE');
+      vevent.addProperty(prop);
+    };
+    addAttendee(input.organizer, 'ACCEPTED', false);
+    for (const a of input.attendees) addAttendee(a, 'NEEDS-ACTION', true);
+  }
+
   return vcalendar.toString();
+}
+
+/**
+ * Set DTSTART/DTEND on an existing VEVENT without mixing time models.
+ *
+ * Keeps DATE values as DATE (all-day events); otherwise writes UTC and drops
+ * any TZID parameter, so the result never depends on the MCP process timezone
+ * nor carries a TZID that contradicts a 'Z' value.
+ */
+function setEventDate(vevent: ICAL.Component, name: 'dtstart' | 'dtend', date: Date): void {
+  const prop = vevent.getFirstProperty(name);
+  const current = prop?.getFirstValue() as ICAL.Time | undefined;
+  let value: ICAL.Time;
+  if (current && current.isDate) {
+    value = ICAL.Time.fromData({
+      year: date.getFullYear(),
+      month: date.getMonth() + 1,
+      day: date.getDate(),
+      isDate: true,
+    });
+  } else {
+    value = ICAL.Time.fromJSDate(date, true);
+  }
+  if (prop) {
+    prop.removeParameter('tzid');
+    prop.setValue(value);
+  } else {
+    vevent.updatePropertyWithValue(name, value);
+  }
 }
 
 /**
@@ -137,16 +195,14 @@ export function updateICalString(raw: string, changes: UpdateEventInput): string
     const startDate = typeof changes.start === 'string'
       ? new Date(changes.start)
       : changes.start;
-    const startTime = ICAL.Time.fromJSDate(startDate, false);
-    vevent.updatePropertyWithValue('dtstart', startTime);
+    setEventDate(vevent, 'dtstart', startDate);
   }
 
   if (changes.end !== undefined) {
     const endDate = typeof changes.end === 'string'
       ? new Date(changes.end)
       : changes.end;
-    const endTime = ICAL.Time.fromJSDate(endDate, false);
-    vevent.updatePropertyWithValue('dtend', endTime);
+    setEventDate(vevent, 'dtend', endDate);
   }
 
   if (changes.description !== undefined) {
