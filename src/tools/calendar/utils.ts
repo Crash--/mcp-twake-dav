@@ -11,6 +11,7 @@
  * - Recurrence expansion integration with Phase 2 transformers
  */
 
+import * as chrono from 'chrono-node';
 import ICAL from 'ical.js';
 import { z } from 'zod';
 import type { Logger } from 'pino';
@@ -58,6 +59,30 @@ export function todayRange(timeZone?: string): TimeRange {
     start: new Date(wallClockToInstant(midnight, timeZone)).toISOString(),
     end: new Date(wallClockToInstant(midnight + DAY_MS, timeZone)).toISOString(),
   };
+}
+
+/**
+ * Read a date given to a write tool, natural language or ISO 8601. A date without an
+ * offset is a wall clock of `timeZone`, the same reading as check_availability, so
+ * that the time checked is the time booked.
+ *
+ * @returns The date, or null if it cannot be read
+ */
+export function parseWriteDate(text: string, timeZone?: string): Date | null {
+  const now = Date.now();
+  const offsetMinutes = Math.round((wallClockMs(now, timeZone) - Math.floor(now / 1000) * 1000) / 60_000);
+  const [result] = chrono.parse(text, { instant: new Date(now), timezone: offsetMinutes });
+  if (!result) {
+    const fallback = new Date(text);
+    return Number.isNaN(fallback.getTime()) ? null : fallback;
+  }
+  if (result.start.isCertain('timezoneOffset')) return result.start.date();
+  const part = (name: 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second') => result.start.get(name) ?? 0;
+  // The offset of today would be wrong for a date on the other side of a clock change.
+  return new Date(wallClockToInstant(
+    Date.UTC(part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second')),
+    timeZone,
+  ));
 }
 
 export const ISO_DATE_HELP =
@@ -436,7 +461,7 @@ export function checkWindow(timeRange: TimeRange, cursor?: EventCursor): string 
   }
   // In calendar days: 92 of them hold 92 days and one hour across the change to winter time.
   if (end - start > MAX_WINDOW_DAYS * 86_400_000 + 3_600_000) {
-    return `The date range is longer than ${MAX_WINDOW_DAYS} days. Ask for ${MAX_WINDOW_DAYS} days at most, then for the following days in another call.`;
+    return `The date range is longer than ${MAX_WINDOW_DAYS} days. Ask for ${MAX_WINDOW_DAYS} days at most, then for the following days in another call. An event crossing the boundary of two ranges appears in both.`;
   }
   // No lower bound: an event already running at the start of the range sorts first, and can be the next one.
   if (cursor && Date.parse(cursor.start) >= end) {

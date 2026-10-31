@@ -39,7 +39,7 @@ export function registerDateRangeTool(
 ): void {
   server.tool(
     'get_events_in_range',
-    `Get the calendar events overlapping a date range, sorted by start, one page at a time. Without dates, covers the next ${DEFAULT_WINDOW_DAYS} days; a range covers ${MAX_WINDOW_DAYS} days at most. When the response has a nextCursor, more events remain. Optionally filter by calendar name.`,
+    `Get the calendar events overlapping a date range, sorted by start, one page at a time. Without dates, covers the next ${DEFAULT_WINDOW_DAYS} days; a range covers ${MAX_WINDOW_DAYS} days at most, and an event crossing the boundary of two ranges appears in both. When the response has a nextCursor, more events remain. Optionally filter by calendar name.`,
     {
       start: z.string().optional().describe(`Start of the range, defaults to now. ${ISO_DATE_HELP}`),
       end: z.string().optional().describe(`End of the range, a date alone includes that whole day. Defaults to ${DEFAULT_WINDOW_DAYS} days after the start.`),

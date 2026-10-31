@@ -103,9 +103,9 @@ export function registerAllTools(
   const organizer = config?.DAV_ORGANIZER_EMAIL
     ? { email: config.DAV_ORGANIZER_EMAIL, name: config.DAV_ORGANIZER_NAME }
     : undefined;
-  registerDeleteEventTool(server, calendarService, logger, defaultCalendar, recurringWrites);
+  registerDeleteEventTool(server, calendarService, logger, defaultCalendar, recurringWrites, userTimezone);
   registerCreateEventTool(server, calendarService, logger, defaultCalendar, userTimezone, organizer);
-  registerUpdateEventTool(server, calendarService, logger, defaultCalendar, recurringWrites);
+  registerUpdateEventTool(server, calendarService, logger, defaultCalendar, recurringWrites, userTimezone);
 
   // Register check_availability tool (Phase 11)
   registerCheckAvailabilityTool(server, calendarService, logger, defaultCalendar, userTimezone);

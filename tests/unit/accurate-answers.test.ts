@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import pino from 'pino';
 import type { DAVCalendarObject } from 'tsdav';
-import { formatEventTime, getEventsWithRecurrenceExpansion, parseDateRange, todayRange } from '../../src/tools/calendar/utils.js';
+import { formatEventTime, getEventsWithRecurrenceExpansion, parseDateRange, parseWriteDate, todayRange } from '../../src/tools/calendar/utils.js';
 
 const logger = pino({ level: 'silent' });
 const PARIS = 'Europe/Paris';
@@ -211,5 +211,34 @@ describe('exceptions of a series with a TZID', () => {
 describe('impossible dates', () => {
   it.each(['2026-13-01', '2026-11-03T14:99', '2026-11-03T25:00', '2026-11-03T14:00:61', '0099-01-01'])('refuses %s', (value) => {
     expect(parseDateRange(value, undefined, 7, PARIS)).toHaveProperty('problem');
+  });
+});
+
+describe('dates given to the write tools', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each([
+    ['2026-11-03T14:00', '2026-11-03T13:00:00.000Z'],
+    ['2026-07-03T14:00:00', '2026-07-03T12:00:00.000Z'],
+    ['2026-11-03T14:00:00Z', '2026-11-03T14:00:00.000Z'],
+    ['2026-11-03T14:00:00+05:00', '2026-11-03T09:00:00.000Z'],
+  ])('reads %s in the user time zone unless it has an offset', (text, instant) => {
+    vi.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z') });
+    expect(parseWriteDate(text, PARIS)?.toISOString()).toBe(instant);
+  });
+
+  it('reads natural language on the day of the user, across a clock change', () => {
+    // Late evening in New York is already tomorrow in Paris, and Paris is still on summer time.
+    vi.useFakeTimers({ now: new Date('2026-10-24T23:30:00Z') });
+    expect(parseWriteDate('tomorrow at 2pm', PARIS)?.toISOString()).toBe('2026-10-26T13:00:00.000Z');
+  });
+
+  it('matches the reading of check_availability', () => {
+    const range = parseDateRange('2026-11-03T14:00', '2026-11-03T15:00', 7, PARIS) as { start: string };
+    expect(parseWriteDate('2026-11-03T14:00', PARIS)?.toISOString()).toBe(range.start);
+  });
+
+  it('gives null on what it cannot read', () => {
+    expect(parseWriteDate('whenever', PARIS)).toBeNull();
   });
 });

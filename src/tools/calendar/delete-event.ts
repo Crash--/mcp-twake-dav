@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
-import * as chrono from 'chrono-node';
+import { parseWriteDate } from './utils.js';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
 import { addExdateToEvent } from '../../transformers/event-builder.js';
@@ -32,6 +32,7 @@ export function registerDeleteEventTool(
   logger: Logger,
   defaultCalendar?: string,
   recurringWrites = true,
+  userTimezone?: string,
 ): void {
   server.tool(
     'delete_event',
@@ -105,22 +106,15 @@ export function registerDeleteEventTool(
             };
           }
 
-          // Parse instanceDate using chrono-node
-          const chronoDate = chrono.parseDate(params.instanceDate);
-          let parsedInstanceDate: Date;
-          if (chronoDate) {
-            parsedInstanceDate = chronoDate;
-          } else {
-            parsedInstanceDate = new Date(params.instanceDate);
-            if (isNaN(parsedInstanceDate.getTime())) {
-              return {
-                content: [{
-                  type: 'text' as const,
-                  text: `Could not parse instanceDate: "${params.instanceDate}". Use natural language (e.g., "Friday", "next Tuesday") or ISO 8601 format.`,
-                }],
-                isError: true,
-              };
-            }
+          const parsedInstanceDate = parseWriteDate(params.instanceDate, userTimezone);
+          if (!parsedInstanceDate) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `Could not parse instanceDate: "${params.instanceDate}". Use natural language (e.g., "Friday", "next Tuesday") or ISO 8601 format.`,
+              }],
+              isError: true,
+            };
           }
 
           // Add EXDATE to master event (does NOT delete the resource)
