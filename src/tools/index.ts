@@ -14,6 +14,7 @@ import type { Logger } from 'pino';
 import type { CalendarService } from '../caldav/calendar-service.js';
 import type { AddressBookService } from '../caldav/addressbook-service.js';
 import { setApprover } from '../approval.js';
+import { runWithSignal } from '../caldav/dav-fetch.js';
 import { registerNextEventTool } from './calendar/next-event.js';
 import { registerTodaysScheduleTool } from './calendar/today.js';
 import { registerDateRangeTool } from './calendar/date-range.js';
@@ -93,6 +94,16 @@ export function registerAllTools(
     as: config?.DAV_ORGANIZER_NAME || config?.DAV_ORGANIZER_EMAIL || config?.DAV_USERNAME,
     timeZone: userTimezone,
   });
+
+  // Every handler gets the client's cancellation on its DAV requests.
+  const registerTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
+  server.tool = ((...args: unknown[]) => {
+    const handler = args.pop() as (...handlerArgs: unknown[]) => unknown;
+    return registerTool(...args, (...handlerArgs: unknown[]) => {
+      const { signal } = handlerArgs.at(-1) as { signal: AbortSignal };
+      return runWithSignal(signal, () => handler(...handlerArgs));
+    });
+  }) as typeof server.tool;
 
   // Register calendar query tools (Phase 4)
   registerNextEventTool(server, calendarService, logger, defaultCalendar, userTimezone);

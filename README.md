@@ -62,6 +62,7 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 - **Recurring events**: RRULE expansion with safety limits, single-occurrence edits and deletions, and an opt-out (`DAV_RECURRING_WRITES=false`) for cautious deployments.
 - **Reliable updates**: events are found by UID with a server-side query; updates use parse-modify-serialize, so alarms, attendees and `X-` properties are preserved.
 - **Status display**: cancelled and tentative events, attendee participation status.
+- **No false answers**: a DAV request that fails or times out (30 seconds) is reported to the assistant as an error, never as an empty result. Cancelling a tool call cancels its requests. Only 429, 503 and network errors are retried.
 - **Five authentication methods**: Basic, Bearer, OpenPaaS ESNToken, **token command** (short-lived tokens refreshed before every call) and an external credentials file.
 - **Reverse proxy support**: `DAV_HREF_PREFIX` for servers published under a path prefix that their responses omit (Twake Calendar / OpenPaaS).
 - CTag-based caching, retries with backoff, natural-language dates ([chrono-node](https://github.com/wanasit/chrono)), HTTPS enforced.

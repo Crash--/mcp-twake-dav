@@ -16,11 +16,14 @@ import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { discoverCalendars, discoverSchedulingInbox } from './discovery.js';
 import { randomUUID } from 'node:crypto';
-import { ConflictError } from '../errors.js';
+import { ConflictError, DavHttpError } from '../errors.js';
 import { transformCalendarObject } from '../transformers/event.js';
 import { transformInvitation, type InboxResponse } from '../transformers/invitation.js';
 import { updateAttendeePartstat } from '../transformers/event-builder.js';
 import type { EventDTO, InvitationDTO } from '../types/dtos.js';
+
+/** A server that answers one of these rejects the query, it did not fail on it. */
+const UID_FILTER_UNSUPPORTED = [400, 403, 404, 405, 415, 501];
 
 /**
  * ISO 8601 time range for server-side calendar filtering
@@ -225,11 +228,11 @@ export class CalendarService {
    * Fetch events from a single calendar identified by display name (case-insensitive)
    *
    * Looks up the calendar by displayName among all discovered calendars.
-   * If no match is found, logs a warning and returns an empty array.
    *
    * @param name - Calendar display name to match (case-insensitive)
    * @param timeRange - Optional ISO 8601 time range for server-side filtering
-   * @returns Array of DAVCalendarObject from the matched calendar, or empty if not found
+   * @returns Array of DAVCalendarObject from the matched calendar
+   * @throws Error if no calendar has this name
    */
   async fetchEventsByCalendarName(name: string, timeRange?: TimeRange): Promise<DAVCalendarObject[]> {
     await this.listCalendars();
@@ -237,8 +240,7 @@ export class CalendarService {
       (cal) => (String(cal.displayName || '')).toLowerCase() === name.toLowerCase()
     );
     if (!match) {
-      this.logger.warn({ calendarName: name }, 'Calendar not found, returning empty');
-      return [];
+      throw new Error(`Calendar "${name}" not found.\n\nFix: Use list_calendars to see the available names.`);
     }
     return this.fetchEvents(match, timeRange);
   }
@@ -496,7 +498,11 @@ export class CalendarService {
         }
       }
     } catch (err) {
-      this.logger.warn({ err, uid }, 'Server-side UID lookup failed, falling back to full scan');
+      if (err instanceof DavHttpError && UID_FILTER_UNSUPPORTED.includes(err.status)) {
+        this.logger.warn({ err, uid }, 'Server-side UID lookup not supported, falling back to full scan');
+      } else {
+        throw err;
+      }
     }
 
     // 2. Fallback: fetch raw calendar objects
@@ -617,53 +623,47 @@ export class CalendarService {
       },
     };
 
-    try {
-      // Execute calendar-query REPORT with retry
-      const responses = await withRetry(
-        () => this.client.calendarQuery({
-          url: inboxUrl,
-          props: queryProps,
-          depth: '1',
-        }),
-        this.logger
-      );
+    // Execute calendar-query REPORT with retry
+    const responses = await withRetry(
+      () => this.client.calendarQuery({
+        url: inboxUrl,
+        props: queryProps,
+        depth: '1',
+      }),
+      this.logger
+    );
 
-      this.logger.debug({ count: responses.length }, 'Received inbox query responses');
+    this.logger.debug({ count: responses.length }, 'Received inbox query responses');
 
-      // Transform responses to InvitationDTOs
-      const invitations: InvitationDTO[] = [];
-      for (const resp of responses) {
-        // Cast response to InboxResponse type
-        const inboxResp: InboxResponse = {
-          href: resp.href || '',
-          props: {
-            getetag: resp.props?.getetag as string | undefined,
-            calendarData: resp.props?.calendarData as string | undefined,
-          },
-        };
+    // Transform responses to InvitationDTOs
+    const invitations: InvitationDTO[] = [];
+    for (const resp of responses) {
+      // Cast response to InboxResponse type
+      const inboxResp: InboxResponse = {
+        href: resp.href || '',
+        props: {
+          getetag: resp.props?.getetag as string | undefined,
+          calendarData: resp.props?.calendarData as string | undefined,
+        },
+      };
 
-        const invitation = transformInvitation(inboxResp, userEmail, this.logger);
-        if (invitation) {
-          // Apply time range filter if provided (client-side since not all servers support it)
-          if (timeRange) {
-            const start = new Date(timeRange.start);
-            const end = new Date(timeRange.end);
-            if (invitation.proposedStart >= start && invitation.proposedEnd <= end) {
-              invitations.push(invitation);
-            }
-          } else {
+      const invitation = transformInvitation(inboxResp, userEmail, this.logger);
+      if (invitation) {
+        // Apply time range filter if provided (client-side since not all servers support it)
+        if (timeRange) {
+          const start = new Date(timeRange.start);
+          const end = new Date(timeRange.end);
+          if (invitation.proposedStart >= start && invitation.proposedEnd <= end) {
             invitations.push(invitation);
           }
+        } else {
+          invitations.push(invitation);
         }
       }
-
-      this.logger.info({ count: invitations.length }, 'Found pending invitations');
-      return invitations;
-    } catch (err) {
-      // Log error but don't crash - return empty list for graceful degradation
-      this.logger.error({ err, inboxUrl }, 'Failed to query scheduling inbox');
-      return [];
     }
+
+    this.logger.info({ count: invitations.length }, 'Found pending invitations');
+    return invitations;
   }
 
   /**
