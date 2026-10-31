@@ -14,6 +14,15 @@ import { randomUUID } from 'node:crypto';
 import type { CreateEventInput, UpdateEventInput } from '../types/dtos.js';
 
 /**
+ * The VEVENT that stands for the event: the master of a series wherever it is in the
+ * object, or the first one when the object holds only exceptions.
+ */
+export function getMasterVevent(comp: ICAL.Component): ICAL.Component | null {
+  const vevents = comp.getAllSubcomponents('vevent');
+  return vevents.find((vevent: ICAL.Component) => !vevent.hasProperty('recurrence-id')) ?? vevents[0] ?? null;
+}
+
+/**
  * Build iCalendar string from CreateEventInput
  *
  * Generates a complete VCALENDAR with VEVENT containing all supplied properties.
@@ -181,7 +190,7 @@ export function updateICalString(raw: string, changes: UpdateEventInput): string
   const comp = new ICAL.Component(jCalData);
 
   // Get VEVENT component
-  const vevent = comp.getFirstSubcomponent('vevent');
+  const vevent = getMasterVevent(comp);
   if (!vevent) {
     throw new Error('No VEVENT component found in iCalendar data');
   }
@@ -323,7 +332,7 @@ export function addAlarmToEvent(
   const comp = new ICAL.Component(jCalData);
 
   // Get VEVENT component
-  const vevent = comp.getFirstSubcomponent('vevent');
+  const vevent = getMasterVevent(comp);
   if (!vevent) {
     throw new Error('No VEVENT component found in iCalendar data');
   }
@@ -363,7 +372,7 @@ export function removeAlarmFromEvent(raw: string, index: number): string {
   const comp = new ICAL.Component(jCalData);
 
   // Get VEVENT component
-  const vevent = comp.getFirstSubcomponent('vevent');
+  const vevent = getMasterVevent(comp);
   if (!vevent) {
     throw new Error('No VEVENT component found in iCalendar data');
   }
@@ -397,7 +406,7 @@ export function removeAllAlarmsFromEvent(raw: string): string {
   const comp = new ICAL.Component(jCalData);
 
   // Get VEVENT component
-  const vevent = comp.getFirstSubcomponent('vevent');
+  const vevent = getMasterVevent(comp);
   if (!vevent) {
     throw new Error('No VEVENT component found in iCalendar data');
   }
@@ -428,7 +437,7 @@ export function addExdateToEvent(raw: string, instanceDate: Date): string {
   const comp = new ICAL.Component(jCalData);
 
   // Get master VEVENT component
-  const vevent = comp.getFirstSubcomponent('vevent');
+  const vevent = getMasterVevent(comp);
   if (!vevent) {
     throw new Error('No VEVENT component found in iCalendar data');
   }
@@ -530,7 +539,7 @@ export function createExceptionVevent(
   const comp = new ICAL.Component(jCalData);
 
   // Get master VEVENT component
-  const masterVevent = comp.getFirstSubcomponent('vevent');
+  const masterVevent = getMasterVevent(comp);
   if (!masterVevent) {
     throw new Error('No VEVENT component found in iCalendar data');
   }
@@ -674,7 +683,7 @@ export function updateAttendeePartstat(
   // Parse iCalendar
   const jCalData = ICAL.parse(iCalString);
   const comp = new ICAL.Component(jCalData);
-  const vevent = comp.getFirstSubcomponent('vevent');
+  const vevent = getMasterVevent(comp);
 
   if (!vevent) {
     throw new Error('No VEVENT found in invitation');

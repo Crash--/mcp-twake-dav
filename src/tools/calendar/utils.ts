@@ -19,6 +19,7 @@ import type { CalendarService, TimeRange } from '../../caldav/calendar-service.j
 import type { EventDTO, FreeBusyPeriod } from '../../types/dtos.js';
 import { addReadWarning } from '../../caldav/dav-fetch.js';
 import { transformCalendarObject } from '../../transformers/event.js';
+import { getMasterVevent } from '../../transformers/event-builder.js';
 import { expandRecurringEvent } from '../../transformers/recurrence.js';
 import { addWallClockDays, icalTimeToDate, wallClockMs, wallClockToInstant } from '../../transformers/timezone.js';
 
@@ -582,7 +583,7 @@ export function computeBusyPeriods(events: EventDTO[], logger: Logger): FreeBusy
     try {
       const jcalData = ICAL.parse(event._raw);
       const comp = new ICAL.Component(jcalData);
-      const vevent = comp.getFirstSubcomponent('vevent');
+      const vevent = getMasterVevent(comp);
 
       if (!vevent) {
         continue;

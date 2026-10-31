@@ -10,7 +10,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
-import { updateICalString, createExceptionVevent } from '../../transformers/event-builder.js';
+import { getMasterVevent, updateICalString, createExceptionVevent } from '../../transformers/event-builder.js';
 import * as chrono from 'chrono-node';
 import ICAL from 'ical.js';
 
@@ -354,7 +354,7 @@ export function registerUpdateEventTool(
         if (event.isRecurring) {
           const jCalData = ICAL.parse(updatedICalString);
           const comp = new ICAL.Component(jCalData);
-          const vevent = comp.getFirstSubcomponent('vevent');
+          const vevent = getMasterVevent(comp);
 
           if (!vevent) {
             throw new Error('VEVENT component missing after update. This is a bug -- please report it.');

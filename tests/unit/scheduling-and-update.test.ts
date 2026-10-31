@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import ICAL from 'ical.js';
-import { buildICalString, updateICalString } from '../../src/transformers/event-builder.js';
+import { addAlarmToEvent, addExdateToEvent, buildICalString, createExceptionVevent, updateICalString } from '../../src/transformers/event-builder.js';
 
 const vevent = (ics: string) => new ICAL.Component(ICAL.parse(ics)).getFirstSubcomponent('vevent')!;
 
@@ -54,5 +54,37 @@ describe('updateICalString dates', () => {
     const out = updateICalString(allDay, { start: new Date(2027, 0, 20, 12), end: new Date(2027, 0, 21, 12) });
     expect(out).toMatch(/DTSTART;VALUE=DATE:20270120/);
     expect(out).toMatch(/DTEND;VALUE=DATE:20270121/);
+  });
+});
+
+describe('writes on an object whose exception comes before its master', () => {
+  const exception = ['BEGIN:VEVENT', 'UID:s', 'DTSTAMP:20260101T000000Z', 'RECURRENCE-ID:20261103T100000Z', 'DTSTART:20261103T150000Z', 'DTEND:20261103T160000Z', 'SUMMARY:exception', 'END:VEVENT'];
+  const master = ['BEGIN:VEVENT', 'UID:s', 'DTSTAMP:20260101T000000Z', 'DTSTART:20261102T100000Z', 'DTEND:20261102T110000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:master', 'END:VEVENT'];
+  const raw = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//t//EN', ...exception, ...master, 'END:VCALENDAR', ''].join('\r\n');
+  const veventNamed = (out: string, summary: string) =>
+    new ICAL.Component(ICAL.parse(out)).getAllSubcomponents('vevent').find((v: ICAL.Component) => v.getFirstPropertyValue('summary') === summary)!;
+
+  it('adds an EXDATE on the master', () => {
+    const out = addExdateToEvent(raw, new Date('2026-11-05T10:00:00Z'));
+    expect(veventNamed(out, 'master').hasProperty('exdate')).toBe(true);
+    expect(veventNamed(out, 'exception').hasProperty('exdate')).toBe(false);
+  });
+
+  it('adds an alarm on the master', () => {
+    const out = addAlarmToEvent(raw, '-PT15M');
+    expect(veventNamed(out, 'master').getAllSubcomponents('valarm')).toHaveLength(1);
+    expect(veventNamed(out, 'exception').getAllSubcomponents('valarm')).toHaveLength(0);
+  });
+
+  it('updates the master and keeps its RRULE', () => {
+    const out = updateICalString(raw, { title: 'renamed' });
+    expect(veventNamed(out, 'renamed').hasProperty('rrule')).toBe(true);
+    expect(veventNamed(out, 'exception')).toBeDefined();
+  });
+
+  it('builds a new exception from the master', () => {
+    const out = createExceptionVevent(raw, new Date('2026-11-05T10:00:00Z'), { title: 'new one' });
+    expect(veventNamed(out, 'new one')).toBeDefined();
+    expect(veventNamed(out, 'master').hasProperty('rrule')).toBe(true);
   });
 });

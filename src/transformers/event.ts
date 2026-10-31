@@ -9,6 +9,7 @@ import ICAL from 'ical.js';
 import type { Logger } from 'pino';
 import type { DAVCalendarObject } from 'tsdav';
 import type { AttendeeInfo, EventDTO } from '../types/dtos.js';
+import { getMasterVevent } from './event-builder.js';
 import { icalTimeToDate, registerTimezones } from './timezone.js';
 
 /**
@@ -42,8 +43,7 @@ export function transformCalendarObject(
     registerTimezones(comp, logger);
 
     // Extract VEVENT component: the master of a series, wherever it is in the object
-    const vevents = comp.getAllSubcomponents('vevent');
-    const vevent = vevents.find((v: ICAL.Component) => !v.hasProperty('recurrence-id')) ?? vevents[0];
+    const vevent = getMasterVevent(comp);
     if (!vevent) {
       logger.debug({ url: davObject.url }, 'No VEVENT component found in iCalendar data');
       return null;
