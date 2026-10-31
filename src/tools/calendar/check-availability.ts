@@ -20,6 +20,7 @@ import {
   computeBusyPeriods,
 } from './utils.js';
 import type { FreeBusyPeriod } from '../../types/dtos.js';
+import { DavHttpError } from '../../errors.js';
 
 /**
  * Format free/busy response for the user
@@ -178,7 +179,13 @@ export function registerCheckAvailabilityTool(
             if (match) {
               targetUrl = match.url;
             } else {
-              throw new Error('Calendar not found, use fallback');
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: `Calendar "${resolvedCalendar}" not found.\n\nFix: Use list_calendars to see the available names.`,
+                }],
+                isError: true,
+              };
             }
           } else {
             targetUrl = calendars[0]?.url;
@@ -192,7 +199,7 @@ export function registerCheckAvailabilityTool(
               end: endDate.toISOString(),
             },
             headers: authHeaders,
-            ...(davFetch() ? { fetch: davFetch() } : {}),
+            fetch: davFetch(),
           });
 
           // Parse VFREEBUSY response with ical.js
@@ -235,7 +242,11 @@ export function registerCheckAvailabilityTool(
 
           throw new Error('No VFREEBUSY data in server response');
         } catch (serverErr) {
-          logger.info({ err: serverErr }, 'Server-side free-busy-query failed, using client-side fallback');
+          // Only a server without free-busy support reaches the fallback: a failing
+          // server must surface here, not be asked again for every event.
+          const unsupported = serverErr instanceof DavHttpError && [400, 403, 404, 405, 415, 501].includes(serverErr.status);
+          if (!unsupported && !(serverErr instanceof ICAL.parse.ParserError)) throw serverErr;
+          logger.info({ err: serverErr }, 'Server-side free-busy-query unavailable, using client-side fallback');
         }
 
         // --- Path 2: Client-side fallback ---

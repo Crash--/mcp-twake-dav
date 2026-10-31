@@ -15,6 +15,7 @@
  * backend only knows the unprefixed paths.
  */
 
+import { guardedFetch } from './dav-fetch.js';
 
 /** Re-add `prefix` to root-relative / same-origin hrefs that lack it. */
 export function rewriteHrefs(body: string, origin: string, prefix: string): string {
@@ -64,11 +65,11 @@ let active: typeof fetch | undefined;
 
 /** Enable the rewriting for every DAV request of this process (DAV_HREF_PREFIX). Idempotent. */
 export function installHrefPrefix(davUrl: string, prefix: string): boolean {
-  if (!active) active = createHrefPrefixFetch(davUrl, prefix);
+  if (!active) active = createHrefPrefixFetch(davUrl, prefix, guardedFetch);
   return true;
 }
 
-/** The fetch to pass to tsdav (`fetch` option), or undefined when no prefix is configured. */
-export function davFetch(): typeof fetch | undefined {
-  return active;
+/** The fetch to pass to tsdav (`fetch` option): the guard, under the rewriting when a prefix is configured. */
+export function davFetch(): typeof fetch {
+  return active ?? guardedFetch;
 }

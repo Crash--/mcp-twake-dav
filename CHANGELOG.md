@@ -4,6 +4,10 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 
 ## [Unreleased]
 
+### Fixed
+- A failing DAV read (401, 413, 429, 500, multiget included) or an unknown calendar or address book name is an error for the assistant, no longer an empty result.
+- Every DAV request has a 30 second timeout and is cancelled with its tool call. `Retry-After` is honoured, and only 429, 503 and network errors are retried.
+
 ## [3.1.0] - 2026-10-31
 
 ### Added

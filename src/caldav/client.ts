@@ -121,7 +121,7 @@ export async function createCalDAVClient(config: Config): Promise<DAVClientType>
     serverUrl: config.DAV_URL,
     ...getAuthConfig(config),
     defaultAccountType: 'caldav',
-    ...(davFetch() ? { fetch: davFetch() } : {}),
+    fetch: davFetch(),
   }), config);
 }
 
@@ -136,7 +136,7 @@ export async function createCardDAVClient(config: Config): Promise<DAVClientType
     serverUrl: config.DAV_URL,
     ...getAuthConfig(config),
     defaultAccountType: 'carddav',
-    ...(davFetch() ? { fetch: davFetch() } : {}),
+    fetch: davFetch(),
   }), config);
 }
 
