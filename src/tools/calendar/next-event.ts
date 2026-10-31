@@ -13,6 +13,9 @@ import {
   formatEvent,
   resolveCalendarEvents,
 } from './utils.js';
+import type { EventDTO } from '../../types/dtos.js';
+
+const SEARCH_HORIZONS_DAYS = [1, 7, 30, 92, 183, 274, 365];
 
 /**
  * Register the get_next_event tool
@@ -46,42 +49,34 @@ export function registerNextEventTool(
       try {
         logger.debug({ params }, 'get_next_event called');
 
-        // Create time range: now to +365 days
-        const now = new Date();
-        const oneYearFromNow = new Date(now);
-        oneYearFromNow.setFullYear(now.getFullYear() + 1);
+        // Widen the search step by step, so that a busy calendar answers from its next day.
+        const now = Date.now();
+        let nextEvent: EventDTO | undefined;
+        let from = now;
+        for (const days of SEARCH_HORIZONS_DAYS) {
+          const until = now + days * 86_400_000;
+          const timeRange = { start: new Date(from).toISOString(), end: new Date(until).toISOString() };
+          const rawEvents = await resolveCalendarEvents(
+            calendarService, params.calendar, defaultCalendar, timeRange
+          );
+          const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+          // An event already running overlaps the range but is not upcoming.
+          nextEvent = events.find((event) => event.startDate.getTime() >= from);
+          if (nextEvent) break;
+          from = until;
+        }
 
-        const timeRange = {
-          start: now.toISOString(),
-          end: oneYearFromNow.toISOString(),
-        };
-
-        // Fetch events based on calendar param / default / all
-        const rawEvents = await resolveCalendarEvents(
-          calendarService, params.calendar, defaultCalendar, timeRange
-        );
-
-        // Transform and expand recurring events
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
-
-        // Filter out past events (events that have already started)
-        const upcomingEvents = events.filter((event) => event.startDate >= now);
-
-        if (upcomingEvents.length === 0) {
+        if (!nextEvent) {
           logger.info('No upcoming events found');
           return {
             content: [
               {
                 type: 'text' as const,
-                text: 'No upcoming events found',
+                text: `No upcoming events found in the next ${SEARCH_HORIZONS_DAYS.at(-1)} days`,
               },
             ],
           };
         }
-
-        // Sort by startDate ascending and take first
-        upcomingEvents.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
-        const nextEvent = upcomingEvents[0];
 
         const formattedEvent = formatEvent(nextEvent, userTimezone);
         logger.info({ uid: nextEvent.uid }, 'Next event found');
