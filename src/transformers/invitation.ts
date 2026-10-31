@@ -116,14 +116,17 @@ export function transformInvitations(
     const organizerProp = vevent.getFirstProperty('organizer');
     const cn = organizerProp?.getParameter('cn');
     const organizerValue = organizerProp?.getFirstValue();
+    const organizerEmail = typeof organizerValue === 'string' ? organizerValue.replace(/^mailto:/i, '') : '';
 
     invitations.push({
       uid: event.uid,
       summary: event.summary || '(No title)',
       organizer: {
         name: (typeof cn === 'string' ? cn : undefined) || 'Unknown',
-        email: typeof organizerValue === 'string' ? organizerValue.replace(/^mailto:/i, '') : '',
+        email: organizerEmail,
       },
+      userIsOrganizer: userEmails.includes(organizerEmail.toLowerCase()),
+      hasExceptions: exceptions.length > 0,
       proposedStart,
       proposedEnd,
       location: event.location || undefined,

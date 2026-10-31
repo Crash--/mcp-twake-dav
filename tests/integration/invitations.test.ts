@@ -187,6 +187,32 @@ describe('invitations with several VEVENTs and delegated calendars', () => {
     return { isError: result.isError, text: (result.content as Array<{ text: string }>)[0].text };
   };
 
+  describe('what the answer says about the organizer', () => {
+    const plain = (...lines: string[]) => object(['BEGIN:VEVENT', 'UID:s', 'DTSTAMP:20260101T000000Z', 'SUMMARY:one', 'DTSTART:20261105T100000Z', 'DURATION:PT1H', me('NEEDS-ACTION'), ...lines, 'END:VEVENT']);
+
+    it('says the server sends it on a plain invitation', async () => {
+      serve(plain('ORGANIZER:mailto:boss@example.com'));
+      expect((await answer()).text).toContain('the server sends it to the organizer.');
+    });
+
+    it('warns on a series with an exception', async () => {
+      serve(object(master('NEEDS-ACTION'), exception('NEEDS-ACTION')));
+      expect((await answer()).text).toContain('may not see it');
+    });
+
+    it('says nothing about an organizer when there is none', async () => {
+      serve(plain());
+      const { text } = await answer();
+      expect(text).not.toMatch(/organizer/i);
+      expect(text).toContain('saved on your copy');
+    });
+
+    it('says nothing about an organizer when it is the user', async () => {
+      serve(plain(`ORGANIZER:mailto:${ME}`));
+      expect((await answer()).text).not.toContain('sends it to the organizer');
+    });
+  });
+
   it('lists an invitation to a single occurrence, without its master', async () => {
     serve(object(exception('NEEDS-ACTION')));
     const text = await list();

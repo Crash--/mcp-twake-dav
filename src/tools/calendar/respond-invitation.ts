@@ -117,10 +117,17 @@ function buildResponseMessage(
   const startStr = invitation.proposedStart.toLocaleString('en-US', { timeZone: userTimezone });
   const endStr = invitation.proposedEnd.toLocaleString('en-US', { timeZone: userTimezone });
 
+  const { organizer, userIsOrganizer, hasExceptions } = invitation;
+  const notice = !organizer.email || userIsOrganizer
+    ? 'Your response is saved on your copy of the event.'
+    : hasExceptions
+    ? 'Your response is saved on your copy of the event. The server sends it to the organizer, who may not see it on the occurrences changed in this series.'
+    : 'Your response is saved on your copy of the event, and the server sends it to the organizer.';
+
   return `Invitation ${action}!\n\n` +
     `Event: ${invitation.summary}\n` +
-    `Organizer: ${invitation.organizer.name} <${invitation.organizer.email}>\n` +
+    (organizer.email ? `Organizer: ${organizer.name} <${organizer.email}>\n` : '') +
     `When: ${startStr} - ${endStr}\n` +
     `Your status: ${partstat}\n\n` +
-    `The organizer will be notified of your response.`;
+    notice;
 }

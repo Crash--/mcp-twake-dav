@@ -279,6 +279,10 @@ export interface InvitationDTO {
   attendeeEmail?: string;
   /** This is one occurrence of a series, not the series */
   isOccurrence?: boolean;
+  /** The current user organizes this event */
+  userIsOrganizer?: boolean;
+  /** The object holds occurrences changed apart from the series */
+  hasExceptions?: boolean;
   /** CalDAV object URL for responding */
   url: string;
   /** HTTP ETag for optimistic concurrency */
