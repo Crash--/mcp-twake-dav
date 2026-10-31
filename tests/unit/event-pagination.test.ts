@@ -51,7 +51,12 @@ describe('paginateEvents', () => {
 describe('checkWindow', () => {
   it('accepts 92 days and refuses more', () => {
     expect(checkWindow({ start: '2026-01-01T00:00:00Z', end: '2026-04-03T00:00:00Z' })).toBeNull();
-    expect(checkWindow({ start: '2026-01-01T00:00:00Z', end: '2026-04-03T00:00:01Z' })).toContain('92 days');
+    expect(checkWindow({ start: '2026-01-01T00:00:00Z', end: '2026-04-03T01:00:01Z' })).toContain('92 days');
+  });
+
+  it('accepts 92 calendar days across the change to winter time', () => {
+    // 2026-08-01 to 2026-10-31 in Paris: 92 days and one hour.
+    expect(checkWindow({ start: '2026-07-31T22:00:00Z', end: '2026-10-31T23:00:00Z' })).toBeNull();
   });
 
   it('refuses a cursor outside the range', () => {

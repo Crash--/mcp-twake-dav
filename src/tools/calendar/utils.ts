@@ -419,7 +419,8 @@ export function checkWindow(timeRange: TimeRange, cursor?: EventCursor): string 
   if (end <= start) {
     return 'The end of the date range must be after its start.';
   }
-  if (end - start > MAX_WINDOW_DAYS * 86_400_000) {
+  // In calendar days: 92 of them hold 92 days and one hour across the change to winter time.
+  if (end - start > MAX_WINDOW_DAYS * 86_400_000 + 3_600_000) {
     return `The date range is longer than ${MAX_WINDOW_DAYS} days. Ask for ${MAX_WINDOW_DAYS} days at most, then for the following days in another call.`;
   }
   if (cursor && (Date.parse(cursor.start) < start || Date.parse(cursor.start) >= end)) {
