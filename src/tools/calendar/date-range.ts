@@ -13,6 +13,14 @@ import {
   formatEvent,
   parseNaturalDateRange,
   resolveCalendarEvents,
+  paginationParams,
+  checkWindow,
+  pageWindow,
+  paginateEvents,
+  formatPageFooter,
+  DEFAULT_EVENT_LIMIT,
+  DEFAULT_WINDOW_DAYS,
+  MAX_WINDOW_DAYS,
 } from './utils.js';
 
 /**
@@ -31,9 +39,10 @@ export function registerDateRangeTool(
 ): void {
   server.tool(
     'get_events_in_range',
-    'Get calendar events for a date range. Accepts natural language like \'this week\', \'next month\', \'tomorrow\', or specific dates like \'2026-02-01 to 2026-02-07\'. Optionally filter by calendar name.',
+    `Get calendar events for a date range, sorted by start, one page at a time. Without dates, covers the next ${DEFAULT_WINDOW_DAYS} days; a range covers ${MAX_WINDOW_DAYS} days at most. When the response has a nextCursor, more events remain. Optionally filter by calendar name.`,
     {
-      when: z.string().describe('Date range expression: \'this week\', \'next month\', \'tomorrow\', \'January 15 to January 20\', etc.'),
+      when: z.string().optional().describe(`Date range expression: \'tomorrow\', \'January 15 to January 20\', etc. Defaults to the next ${DEFAULT_WINDOW_DAYS} days.`),
+      ...paginationParams,
       calendar: z.string().optional().describe(
         'Calendar name to search in. Use "all" to search all calendars. ' +
         (defaultCalendar ? `Defaults to "${defaultCalendar}".` : 'Defaults to all calendars.')
@@ -49,7 +58,11 @@ export function registerDateRangeTool(
         logger.debug({ params }, 'get_events_in_range called');
 
         // Parse natural language date expression
-        const timeRange = parseNaturalDateRange(params.when);
+        const now = Date.now();
+        const timeRange = params.when
+          ? parseNaturalDateRange(params.when)
+          : { start: new Date(now).toISOString(), end: new Date(now + DEFAULT_WINDOW_DAYS * 86_400_000).toISOString() };
+        const label = params.when ?? `the next ${DEFAULT_WINDOW_DAYS} days`;
 
         if (!timeRange) {
           logger.warn({ when: params.when }, 'Could not parse date range');
@@ -64,34 +77,41 @@ export function registerDateRangeTool(
           };
         }
 
+        const windowProblem = checkWindow(timeRange, params.cursor);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
+        }
+
         // Fetch events based on calendar param / default / all
+        const queryWindow = pageWindow(timeRange, params.cursor);
         const rawEvents = await resolveCalendarEvents(
-          calendarService, params.calendar, defaultCalendar, timeRange
+          calendarService, params.calendar, defaultCalendar, queryWindow
         );
 
         // Transform and expand recurring events
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const limit = params.limit ?? DEFAULT_EVENT_LIMIT;
+        const expanded = getEventsWithRecurrenceExpansion(
+          rawEvents, queryWindow, logger, (params.cursor?.skip ?? 0) + limit + 1
+        );
+        const { page: events, nextCursor } = paginateEvents(expanded, limit, params.cursor);
 
         if (events.length === 0) {
-          logger.info({ when: params.when }, 'No events found for date range');
+          logger.info({ when: label }, 'No events found for date range');
           return {
             content: [
               {
                 type: 'text' as const,
-                text: `No events found for ${params.when}`,
+                text: `No events found for ${label}`,
               },
             ],
           };
         }
 
-        // Sort by startDate ascending (already sorted, but explicit)
-        events.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
-
         // Format all events
         const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
-        const result = `Events for ${params.when} (${events.length} total):\n\n${formattedEvents}`;
+        const result = `Events for ${label} (${events.length} in this page):\n\n${formattedEvents}${formatPageFooter(nextCursor)}`;
 
-        logger.info({ when: params.when, count: events.length }, 'Events retrieved for date range');
+        logger.info({ when: label, count: events.length }, 'Events retrieved for date range');
 
         return {
           content: [

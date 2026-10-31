@@ -14,6 +14,12 @@ import {
   getStartOfDay,
   getEndOfDay,
   resolveCalendarEvents,
+  paginationParams,
+  checkWindow,
+  pageWindow,
+  paginateEvents,
+  formatPageFooter,
+  DEFAULT_EVENT_LIMIT,
 } from './utils.js';
 
 /**
@@ -32,8 +38,9 @@ export function registerTodaysScheduleTool(
 ): void {
   server.tool(
     'get_todays_schedule',
-    'Get all events scheduled for today, sorted by time. Optionally filter by calendar name, or use "all" to search all calendars.',
+    'Get the events scheduled for today, sorted by time, one page at a time. When the response has a nextCursor, more events remain. Optionally filter by calendar name, or use "all" to search all calendars.',
     {
+      ...paginationParams,
       calendar: z.string().optional().describe(
         'Calendar name to search in. Use "all" to search all calendars. ' +
         (defaultCalendar ? `Defaults to "${defaultCalendar}".` : 'Defaults to all calendars.')
@@ -58,13 +65,23 @@ export function registerTodaysScheduleTool(
           end: endOfDay.toISOString(),
         };
 
+        const windowProblem = checkWindow(timeRange, params.cursor);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
+        }
+
         // Fetch events based on calendar param / default / all
+        const queryWindow = pageWindow(timeRange, params.cursor);
         const rawEvents = await resolveCalendarEvents(
-          calendarService, params.calendar, defaultCalendar, timeRange
+          calendarService, params.calendar, defaultCalendar, queryWindow
         );
 
         // Transform and expand recurring events
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const limit = params.limit ?? DEFAULT_EVENT_LIMIT;
+        const expanded = getEventsWithRecurrenceExpansion(
+          rawEvents, queryWindow, logger, (params.cursor?.skip ?? 0) + limit + 1
+        );
+        const { page: events, nextCursor } = paginateEvents(expanded, limit, params.cursor);
 
         if (events.length === 0) {
           logger.info('No events scheduled for today');
@@ -78,12 +95,9 @@ export function registerTodaysScheduleTool(
           };
         }
 
-        // Sort by startDate ascending (already sorted by getEventsWithRecurrenceExpansion, but explicit)
-        events.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
-
         // Format all events
         const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
-        const result = `Today's schedule (${events.length} event${events.length === 1 ? '' : 's'}):\n\n${formattedEvents}`;
+        const result = `Today's schedule (${events.length} event${events.length === 1 ? '' : 's'} in this page):\n\n${formattedEvents}${formatPageFooter(nextCursor)}`;
 
         logger.info({ count: events.length }, 'Today\'s schedule retrieved');
 

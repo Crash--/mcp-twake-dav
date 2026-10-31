@@ -18,6 +18,7 @@ import {
   resolveCalendarEvents,
   getEventsWithRecurrenceExpansion,
   computeBusyPeriods,
+  checkWindow,
 } from './utils.js';
 import type { FreeBusyPeriod } from '../../types/dtos.js';
 import { isDavUnsupported } from '../../errors.js';
@@ -163,6 +164,11 @@ export function registerCheckAvailabilityTool(
           start: startDate.toISOString(),
           end: endDate.toISOString(),
         };
+
+        const windowProblem = checkWindow(timeRange);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
+        }
 
         // --- Path 1: Server-side free-busy-query ---
         try {

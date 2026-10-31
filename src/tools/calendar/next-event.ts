@@ -62,7 +62,7 @@ export function registerNextEventTool(
         );
 
         // Transform and expand recurring events
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, 1);
 
         // Filter out past events (events that have already started)
         const upcomingEvents = events.filter((event) => event.startDate >= now);

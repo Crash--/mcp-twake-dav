@@ -23,6 +23,8 @@ import { transformInvitation, type InboxResponse } from '../transformers/invitat
 import { updateAttendeePartstat } from '../transformers/event-builder.js';
 import type { EventDTO, InvitationDTO } from '../types/dtos.js';
 
+const DAY_MS = 86_400_000;
+
 /**
  * ISO 8601 time range for server-side calendar filtering
  */
@@ -164,13 +166,7 @@ export class CalendarService {
     if (timeRange) {
       this.logger.debug({ url: calendar.url }, 'Skipping cache for time-range query');
 
-      const objects = await withRetry(
-        () => this.client.fetchCalendarObjects({
-          calendar,
-          timeRange,
-        }),
-        this.logger
-      );
+      const objects = await this.queryTimeRange(calendar, timeRange);
 
       this.logger.info(
         { url: calendar.url, count: objects.length, timeRange },
@@ -220,6 +216,55 @@ export class CalendarService {
     );
 
     return objects;
+  }
+
+  /**
+   * One calendar-query that returns the objects directly: no list of hrefs to
+   * send back in a multiget, so the request body stays small at any density.
+   *
+   * @throws DavHttpError when the server still refuses a window narrower than a day
+   */
+  private async queryTimeRange(calendar: DAVCalendar, timeRange: TimeRange): Promise<DAVCalendarObject[]> {
+    const icalTime = (iso: string) => `${new Date(iso).toISOString().slice(0, 19).replace(/[-:]/g, '')}Z`;
+    try {
+      const responses = await withRetry(
+        () => this.client.calendarQuery({
+          url: calendar.url,
+          depth: '1',
+          props: { 'd:getetag': {}, 'c:calendar-data': {} },
+          filters: {
+            'comp-filter': {
+              _attributes: { name: 'VCALENDAR' },
+              'comp-filter': {
+                _attributes: { name: 'VEVENT' },
+                'time-range': { _attributes: { start: icalTime(timeRange.start), end: icalTime(timeRange.end) } },
+              },
+            },
+          },
+        }),
+        this.logger
+      );
+      return responses.flatMap((res) => {
+        if (!res.ok) throw new DavHttpError(res.status);
+        const data = res.props?.calendarData?._cdata ?? res.props?.calendarData;
+        return res.href && data
+          ? [{ url: new URL(res.href, calendar.url).href, etag: res.props?.getetag, data }]
+          : [];
+      });
+    } catch (err) {
+      const start = Date.parse(timeRange.start);
+      const end = Date.parse(timeRange.end);
+      if (!(err instanceof DavHttpError) || err.status !== 413 || end - start <= DAY_MS) throw err;
+
+      const middle = new Date((start + end) / 2).toISOString();
+      this.logger.info({ url: calendar.url, timeRange }, 'Window too large for the server, splitting it');
+      const halves = [
+        ...(await this.queryTimeRange(calendar, { start: timeRange.start, end: middle })),
+        ...(await this.queryTimeRange(calendar, { start: middle, end: timeRange.end })),
+      ];
+      // An event crossing the middle is in both halves.
+      return [...new Map(halves.map((obj) => [obj.url, obj])).values()];
+    }
   }
 
   /**
