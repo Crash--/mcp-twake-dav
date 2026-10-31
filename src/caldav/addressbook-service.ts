@@ -253,15 +253,12 @@ export class AddressBookService {
     // Generate unique filename
     const filename = `${randomUUID()}.vcf`;
 
-    // Create vCard with retry
-    const response = await withRetry(
-      () => this.client.createVCard({
-        addressBook: targetAddressBook,
-        vCardString,
-        filename,
-      }),
-      this.logger
-    );
+    // No retry: after a cut, the first write may have been applied and a second turns that into a failure.
+    const response = await this.client.createVCard({
+      addressBook: targetAddressBook,
+      vCardString,
+      filename,
+    });
 
     // Check response status
     if (!response.ok) {
@@ -306,13 +303,10 @@ export class AddressBookService {
     vCardString: string,
     etag: string
   ): Promise<{ etag: string | undefined }> {
-    // Update vCard with retry
-    const response = await withRetry(
-      () => this.client.updateVCard({
-        vCard: { url, data: vCardString, etag },
-      }),
-      this.logger
-    );
+    // No retry: see createContact
+    const response = await this.client.updateVCard({
+      vCard: { url, data: vCardString, etag },
+    });
 
     // Check response status
     if (!response.ok) {
@@ -370,13 +364,10 @@ export class AddressBookService {
       resolvedEtag = match.etag;
     }
 
-    // Delete vCard with retry
-    const response = await withRetry(
-      () => this.client.deleteVCard({
-        vCard: { url, etag: resolvedEtag },
-      }),
-      this.logger
-    );
+    // No retry: see createContact
+    const response = await this.client.deleteVCard({
+      vCard: { url, etag: resolvedEtag },
+    });
 
     // Check response status
     if (!response.ok) {
