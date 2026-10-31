@@ -125,6 +125,20 @@ describe('findEventByUid', () => {
     await expect(service().findEventByUid('a')).rejects.toThrow('HTTP 500');
   });
 
+  it.each([
+    ['an HTML page', { status: 200, headers: { 'content-type': 'text/html' }, body: '<html>login</html>' }],
+    ['an empty body', { status: 200, headers: { 'content-type': 'text/calendar' } }],
+    ['text that is no event', { status: 200, headers: { 'content-type': 'text/calendar' }, body: 'not ical' }],
+  ])('reports %s on the read of the object, not "not found"', async (_label, reply) => {
+    dav.handler = (req) => {
+      if (req.url === '/calendars/u1.json') {
+        return req.method === 'GET' ? { status: 200, headers: JSON_HEADERS, body: '{}' } : found('/calendars/u1/Perso/x.ics');
+      }
+      return req.method === 'GET' ? reply : null;
+    };
+    await expect(service().findEventByUid('a')).rejects.toThrow('The DAV server answered');
+  });
+
   it.each([401, 403, 429, 500])('a probe in %i is an error, and the API is asked again next time', async (status) => {
     let fail = true;
     dav.handler = (req) => {

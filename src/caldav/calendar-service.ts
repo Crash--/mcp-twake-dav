@@ -643,8 +643,17 @@ export class CalendarService {
       return answer;
     }, this.logger);
     if (response.status === 404) return null;
-    const eventDTO = transformCalendarObject({ url, etag: response.headers.get('etag') ?? undefined, data: await response.text() }, this.logger);
-    return eventDTO?.uid === uid ? eventDTO : null;
+    const contentType = response.headers.get('content-type') ?? '';
+    const data = await response.text();
+    // The server said this object exists: anything but the object is a failed read, not "not found".
+    if (!/calendar/i.test(contentType) || !data) {
+      throw new DavHttpError(response.status, null, `unexpected answer for the event, content type "${contentType}"`);
+    }
+    const eventDTO = transformCalendarObject({ url, etag: response.headers.get('etag') ?? undefined, data }, this.logger);
+    if (eventDTO?.uid !== uid) {
+      throw new DavHttpError(response.status, null, 'the object read is not the event asked for');
+    }
+    return eventDTO;
   }
 
   /** Query one calendar for a UID (RFC 4791 9.7.5), within `timeRange` if given. */
