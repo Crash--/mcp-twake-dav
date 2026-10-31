@@ -16,14 +16,12 @@ import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { discoverCalendars, discoverSchedulingInbox } from './discovery.js';
 import { randomUUID } from 'node:crypto';
-import { ConflictError, DavHttpError } from '../errors.js';
+import { ConflictError, isDavUnsupported } from '../errors.js';
+import { hasPartialRead } from './dav-fetch.js';
 import { transformCalendarObject } from '../transformers/event.js';
 import { transformInvitation, type InboxResponse } from '../transformers/invitation.js';
 import { updateAttendeePartstat } from '../transformers/event-builder.js';
 import type { EventDTO, InvitationDTO } from '../types/dtos.js';
-
-/** A server that answers one of these rejects the query, it did not fail on it. */
-const UID_FILTER_UNSUPPORTED = [400, 403, 404, 405, 415, 501];
 
 /**
  * ISO 8601 time range for server-side calendar filtering
@@ -214,7 +212,7 @@ export class CalendarService {
     );
 
     // Cache the results (only for full fetches, not time-range queries)
-    this.objectCache.set(calendar.url, calendar.ctag ?? '', objects);
+    if (!hasPartialRead()) this.objectCache.set(calendar.url, calendar.ctag ?? '', objects);
 
     this.logger.info(
       { url: calendar.url, count: objects.length, cached: true },
@@ -498,7 +496,7 @@ export class CalendarService {
         }
       }
     } catch (err) {
-      if (err instanceof DavHttpError && UID_FILTER_UNSUPPORTED.includes(err.status)) {
+      if (isDavUnsupported(err)) {
         this.logger.warn({ err, uid }, 'Server-side UID lookup not supported, falling back to full scan');
       } else {
         throw err;
