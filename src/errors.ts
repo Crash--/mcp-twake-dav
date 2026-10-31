@@ -133,3 +133,42 @@ export class ConflictError extends Error {
     this.name = 'ConflictError';
   }
 }
+
+function davStatusAdvice(status: number): string {
+  if (status === 401 || status === 403) {
+    return 'Fix: The DAV server refused the credentials or the access. Check that the token or password is still valid.';
+  }
+  if (status === 413) {
+    return 'Fix: The request is too large for the server. Ask for a narrower date range.';
+  }
+  if (status === 429 || status === 503) {
+    return 'Fix: The DAV server is overloaded or rate limiting. Try again in a moment.';
+  }
+  return 'Fix: The DAV server failed on this request. Try again, or ask for a narrower date range.';
+}
+
+/**
+ * The DAV server answered a read with an error. Never report this as an empty result.
+ */
+export class DavHttpError extends Error {
+  readonly status: number;
+  readonly retryAfter: string | null;
+
+  constructor(status: number, retryAfter: string | null = null, detail?: string) {
+    super(
+      `The DAV server answered HTTP ${status}${detail ? ` (${detail})` : ''}, so this result is unknown, not empty.\n\n${davStatusAdvice(status)}`
+    );
+    this.name = 'DavHttpError';
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
+
+export class DavTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(
+      `The DAV server did not answer within ${timeoutMs / 1000} seconds, so this result is unknown, not empty.\n\nFix: Try again, or ask for a narrower date range.`
+    );
+    this.name = 'DavTimeoutError';
+  }
+}

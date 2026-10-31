@@ -6,6 +6,7 @@
  */
 
 import type { Logger } from 'pino';
+import { DavHttpError, DavTimeoutError } from '../errors.js';
 
 /**
  * Configuration options for retry behavior
@@ -30,6 +31,20 @@ const DEFAULT_OPTIONS: RetryOptions = {
   maxDelayMs: 10000,
   jitter: true,
 };
+
+/** Only overload statuses and network failures can succeed on a second try. */
+function isRetryable(error: unknown): boolean {
+  if (error instanceof DavHttpError) return error.status === 429 || error.status === 503;
+  if (error instanceof DavTimeoutError) return false;
+  return (error as Error)?.name !== 'AbortError';
+}
+
+function retryAfterMs(error: unknown): number {
+  if (!(error instanceof DavHttpError) || !error.retryAfter) return 0;
+  const seconds = Number(error.retryAfter);
+  const ms = Number.isNaN(seconds) ? Date.parse(error.retryAfter) - Date.now() : seconds * 1000;
+  return Number.isNaN(ms) ? 0 : Math.max(ms, 0);
+}
 
 /**
  * Retry an async operation with exponential backoff
@@ -61,7 +76,7 @@ export async function withRetry<T>(
       lastError = error;
 
       // If this was the last attempt, re-throw the error
-      if (attempt === opts.maxAttempts) {
+      if (attempt === opts.maxAttempts || !isRetryable(error)) {
         throw error;
       }
 
@@ -70,9 +85,10 @@ export async function withRetry<T>(
       const cappedDelay = Math.min(baseDelay, opts.maxDelayMs);
 
       // Apply jitter if enabled: multiply by random factor [0.5, 1.0]
-      const delay = opts.jitter
+      const backoff = opts.jitter
         ? cappedDelay * (0.5 + Math.random() * 0.5)
         : cappedDelay;
+      const delay = Math.min(Math.max(backoff, retryAfterMs(error)), opts.maxDelayMs);
 
       // Log retry warning with context
       logger.warn({

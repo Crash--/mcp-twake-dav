@@ -168,10 +168,10 @@ export class AddressBookService {
    * Fetch contacts from a single address book identified by display name (case-insensitive)
    *
    * Looks up the address book by displayName among all discovered address books.
-   * If no match is found, logs a warning and returns an empty array.
    *
    * @param name - Address book display name to match (case-insensitive)
-   * @returns Array of DAVVCard from the matched address book, or empty if not found
+   * @returns Array of DAVVCard from the matched address book
+   * @throws Error if no address book has this name
    */
   async fetchContactsByAddressBookName(name: string): Promise<DAVVCard[]> {
     await this.listAddressBooks();
@@ -179,8 +179,7 @@ export class AddressBookService {
       (ab) => getAddressBookName(ab).toLowerCase() === name.toLowerCase()
     );
     if (!match) {
-      this.logger.warn({ addressBookName: name }, 'Address book not found, returning empty');
-      return [];
+      throw new Error(`Address book "${name}" not found.\n\nFix: Use list_addressbooks to see the available names.`);
     }
     return this.fetchContacts(match);
   }
