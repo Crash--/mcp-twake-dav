@@ -59,7 +59,7 @@ export function registerNextEventTool(
           const rawEvents = await resolveCalendarEvents(
             calendarService, params.calendar, defaultCalendar, timeRange
           );
-          const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+          const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, userTimezone);
           // An event already running overlaps the range but is not upcoming.
           nextEvent = events.find((event) => event.startDate.getTime() >= from);
           if (nextEvent) break;

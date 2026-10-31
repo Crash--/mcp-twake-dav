@@ -77,7 +77,7 @@ export function registerDateRangeTool(
 
         // Transform and expand recurring events
         // Over the whole range: an occurrence moved after the cursor comes from before it.
-        const expanded = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const expanded = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, userTimezone);
         const { page: events, nextCursor } = paginateEvents(expanded, params.limit, params.cursor);
 
         if (events.length === 0) {

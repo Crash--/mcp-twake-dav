@@ -6,6 +6,7 @@
  */
 
 import ICAL from 'ical.js';
+import { icalTimeToDate } from './timezone.js';
 
 /**
  * Options for recurring event expansion
@@ -35,6 +36,9 @@ export interface RecurrenceOptions {
    * @default 0
    */
   lookbackMs?: number;
+
+  /** Time zone of the user, for occurrences that are dates or have no zone. */
+  userTimezone?: string;
 }
 
 /**
@@ -86,7 +90,7 @@ export function expandRecurringEvent(
   // Iterate through occurrences until limits reached
   while ((next = expand.next()) && count < maxOccurrences) {
     // Convert ICAL.Time to JS Date
-    const jsDate = next.toJSDate();
+    const jsDate = icalTimeToDate(next, options?.userTimezone);
 
     // Stop if occurrence is beyond maxDate
     if (jsDate > maxDate) {

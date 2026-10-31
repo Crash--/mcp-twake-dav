@@ -203,7 +203,7 @@ export function registerCheckAvailabilityTool(
 
         // --- Path 2: Client-side fallback ---
         const rawEvents = await calendarService.fetchEventsFrom(targets, timeRange);
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, userTimezone);
         const busyPeriods = computeBusyPeriods(events, logger);
         // Anything not read could be what makes this time busy.
         if (hasPartialRead()) {

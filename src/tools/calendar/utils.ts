@@ -20,30 +20,9 @@ import type { EventDTO, FreeBusyPeriod } from '../../types/dtos.js';
 import { addReadWarning } from '../../caldav/dav-fetch.js';
 import { transformCalendarObject } from '../../transformers/event.js';
 import { expandRecurringEvent } from '../../transformers/recurrence.js';
+import { addWallClockDays, wallClockMs, wallClockToInstant } from '../../transformers/timezone.js';
 
 const DAY_MS = 86_400_000;
-
-/** The wall clock of `timeZone` at `instant`, as if it were UTC. */
-function wallClockMs(instant: number, timeZone?: string): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-  }).formatToParts(instant);
-  const part = (type: string) => Number(parts.find((p) => p.type === type)!.value);
-  return Date.UTC(part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second'));
-}
-
-/** The instant at which `timeZone` shows this wall clock. */
-function wallClockToInstant(wallClock: number, timeZone?: string): number {
-  const offset = (instant: number) => wallClockMs(instant, timeZone) - Math.floor(instant / 1000) * 1000;
-  return wallClock - offset(wallClock - offset(wallClock));
-}
 
 const ISO_INPUT = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
 
@@ -120,8 +99,24 @@ export function formatEventTime(event: EventDTO, userTimezone?: string): string 
     timeZone: displayTimezone,
   };
 
+  const dayOf = (date: Date) => date.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    timeZone: displayTimezone,
+  });
+
+  if (event.allDay) {
+    // DTEND of an all-day event is the day after its last one.
+    const firstDay = dayOf(event.startDate);
+    const lastDay = dayOf(new Date(event.endDate.getTime() - 1));
+    return `${firstDay === lastDay ? firstDay : `${firstDay} - ${lastDay}`} (all day)`;
+  }
+
   const startStr = event.startDate.toLocaleString('en-US', options);
   const endTime = event.endDate.toLocaleString('en-US', {
+    // The model must see when an event of several days ends.
+    ...(dayOf(event.startDate) === dayOf(event.endDate) ? {} : { weekday: 'short', month: 'short', day: 'numeric' }),
     hour: 'numeric',
     minute: '2-digit',
     timeZone: displayTimezone,
@@ -259,6 +254,7 @@ export function getEventsWithRecurrenceExpansion(
   rawEvents: DAVCalendarObject[],
   timeRange: TimeRange,
   logger: Logger,
+  userTimezone?: string,
 ): EventDTO[] {
   const startDate = new Date(timeRange.start);
   const endDate = new Date(timeRange.end);
@@ -266,7 +262,7 @@ export function getEventsWithRecurrenceExpansion(
 
   for (const rawEvent of rawEvents) {
     // Transform to EventDTO
-    const eventDTO = transformCalendarObject(rawEvent, logger);
+    const eventDTO = transformCalendarObject(rawEvent, logger, userTimezone);
     if (!eventDTO) {
       // Transformation failed (logged by transformer)
       addReadWarning(`The event ${rawEvent.url.split('/').pop()} could not be read.`);
@@ -311,6 +307,7 @@ export function getEventsWithRecurrenceExpansion(
           maxDate: endDate,
           startDate: startDate,
           lookbackMs: Math.max(duration - 1, 0),
+          userTimezone,
         });
         if (occurrences.length >= MAX_OCCURRENCES_PER_SERIES) {
           addReadWarning(`The series ${eventDTO.uid} has more than ${MAX_OCCURRENCES_PER_SERIES} occurrences in this range, and the later ones are not shown. Ask for a shorter range.`);
@@ -358,7 +355,10 @@ export function getEventsWithRecurrenceExpansion(
             });
           } else {
             // Normal occurrence (no exception)
-            const occurrenceEnd = new Date(occurrenceDate.getTime() + duration);
+            const occurrenceEnd = eventDTO.allDay
+              ? addWallClockDays(occurrenceDate, Math.round(duration / DAY_MS), userTimezone)
+              : new Date(occurrenceDate.getTime() + duration);
+            if (!overlaps(occurrenceDate, occurrenceEnd)) continue;
 
             allEvents.push({
               ...eventDTO,

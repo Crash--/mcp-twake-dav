@@ -93,7 +93,7 @@ export function registerSearchEventsTool(
 
         // Transform and expand recurring events
         // Over the whole range: an occurrence moved after the cursor comes from before it.
-        let events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        let events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, userTimezone);
 
         // Apply keyword filter if query provided
         if (params.query) {

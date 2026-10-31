@@ -44,6 +44,9 @@ export interface EventDTO {
   /** End date/time from DTEND property, converted to JS Date */
   endDate: Date;
 
+  /** DTSTART is a date without a time */
+  allDay?: boolean;
+
   /** Location from LOCATION property */
   location: string | undefined;
 

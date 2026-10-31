@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import pino from 'pino';
 import type { DAVCalendarObject } from 'tsdav';
-import { getEventsWithRecurrenceExpansion, parseDateRange, todayRange } from '../../src/tools/calendar/utils.js';
+import { formatEventTime, getEventsWithRecurrenceExpansion, parseDateRange, todayRange } from '../../src/tools/calendar/utils.js';
 
 const logger = pino({ level: 'silent' });
 const PARIS = 'Europe/Paris';
@@ -89,5 +89,69 @@ describe('events overlapping the range', () => {
 
     const oldWindow = { start: '2026-10-31T00:00:00Z', end: '2026-11-01T00:00:00Z' };
     expect(getEventsWithRecurrenceExpansion([series], oldWindow, logger)).toEqual([]);
+  });
+});
+
+describe('dates without a zone', () => {
+  const allDay = object('day', 'DTSTART;VALUE=DATE:20261103', 'DTEND;VALUE=DATE:20261104');
+  const parisDay = (date: string) => parseDateRange(date, date, 7, PARIS) as { start: string; end: string };
+
+  it.each(['Europe/Paris', 'America/New_York', 'Asia/Tokyo'])('an all-day event is on one day in %s, whatever the process', (zone) => {
+    const day = (date: string) => parseDateRange(date, date, 7, zone) as { start: string; end: string };
+    const on = (date: string) => getEventsWithRecurrenceExpansion([allDay], day(date), logger, zone).length;
+    expect([on('2026-11-02'), on('2026-11-03'), on('2026-11-04')]).toEqual([0, 1, 0]);
+  });
+
+  it('shows an all-day event as such', () => {
+    const [event] = getEventsWithRecurrenceExpansion([allDay], parisDay('2026-11-03'), logger, PARIS);
+    expect(formatEventTime(event, PARIS)).toBe('Tue, Nov 3 (all day)');
+  });
+
+  it('shows the last day of an all-day event of several days', () => {
+    const long = object('long', 'DTSTART;VALUE=DATE:20261103', 'DTEND;VALUE=DATE:20261106');
+    const [event] = getEventsWithRecurrenceExpansion([long], parisDay('2026-11-04'), logger, PARIS);
+    expect(formatEventTime(event, PARIS)).toBe('Tue, Nov 3 - Thu, Nov 5 (all day)');
+  });
+
+  it('keeps an all-day occurrence to its day across a 25 hour day', () => {
+    const series = object('s', 'DTSTART;VALUE=DATE:20261024', 'DTEND;VALUE=DATE:20261025', 'RRULE:FREQ=DAILY');
+    const on = (date: string) => getEventsWithRecurrenceExpansion([series], parisDay(date), logger, PARIS);
+    // The clock goes back on 2026-10-25 in Paris.
+    expect(on('2026-10-25').map((e) => e.startDate.toISOString())).toEqual(['2026-10-24T22:00:00.000Z']);
+    expect(on('2026-10-26').map((e) => e.startDate.toISOString())).toEqual(['2026-10-25T23:00:00.000Z']);
+  });
+
+  it('reads a floating time in the user time zone', () => {
+    const floating = object('f', 'DTSTART:20261103T090000', 'DTEND:20261103T100000');
+    const [event] = getEventsWithRecurrenceExpansion([floating], parisDay('2026-11-03'), logger, PARIS);
+    expect(event.startDate.toISOString()).toBe('2026-11-03T08:00:00.000Z');
+  });
+
+  it('shows the end date of an event of several days', () => {
+    const conf = object('conf', 'DTSTART:20261101T090000Z', 'DTEND:20261105T170000Z');
+    const [event] = getEventsWithRecurrenceExpansion([conf], parisDay('2026-11-03'), logger, PARIS);
+    expect(formatEventTime(event, PARIS)).toBe('Sun, Nov 1, 10:00 AM - Thu, Nov 5, 6:00 PM (Europe/Paris)');
+  });
+});
+
+describe('winter time', () => {
+  it('a date alone ends at the right instant on the 25 hour day', () => {
+    expect(parseDateRange('2026-10-25', '2026-10-25', 7, PARIS)).toEqual({
+      start: '2026-10-24T22:00:00.000Z',
+      end: '2026-10-25T23:00:00.000Z',
+    });
+  });
+
+  it('a wall clock in winter takes the winter offset', () => {
+    expect(parseDateRange('2026-12-01T09:00', '2026-12-01T10:00', 7, PARIS)).toEqual({
+      start: '2026-12-01T08:00:00.000Z',
+      end: '2026-12-01T09:00:00.000Z',
+    });
+  });
+
+  it('today is 25 hours on the day the clock goes back', () => {
+    vi.useFakeTimers({ now: new Date('2026-10-25T12:00:00Z') });
+    expect(todayRange(PARIS)).toEqual({ start: '2026-10-24T22:00:00.000Z', end: '2026-10-25T23:00:00.000Z' });
+    vi.useRealTimers();
   });
 });
