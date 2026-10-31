@@ -305,15 +305,12 @@ export class CalendarService {
     // Generate filename
     const filename = `${randomUUID()}.ics`;
 
-    // Call tsdav createCalendarObject with retry
-    const response = await withRetry(
-      () => this.client.createCalendarObject({
-        calendar: targetCalendar,
-        iCalString,
-        filename,
-      }),
-      this.logger
-    );
+    // No retry: after a cut, the first write may have been applied and a second turns that into a failure.
+    const response = await this.client.createCalendarObject({
+      calendar: targetCalendar,
+      iCalString,
+      filename,
+    });
 
     // Check response
     if (!response.ok) {
@@ -355,17 +352,14 @@ export class CalendarService {
     iCalString: string,
     etag: string
   ): Promise<{ etag: string | undefined }> {
-    // Call tsdav updateCalendarObject with retry
-    const response = await withRetry(
-      () => this.client.updateCalendarObject({
-        calendarObject: {
-          url,
-          data: iCalString,
-          etag,
-        },
-      }),
-      this.logger
-    );
+    // No retry: see createEvent
+    const response = await this.client.updateCalendarObject({
+      calendarObject: {
+        url,
+        data: iCalString,
+        etag,
+      },
+    });
 
     // Check response
     if (!response.ok) {
@@ -422,16 +416,13 @@ export class CalendarService {
       resolvedEtag = matchingObject.etag;
     }
 
-    // Call tsdav deleteCalendarObject with retry
-    const response = await withRetry(
-      () => this.client.deleteCalendarObject({
-        calendarObject: {
-          url,
-          etag: resolvedEtag!,
-        },
-      }),
-      this.logger
-    );
+    // No retry: see createEvent
+    const response = await this.client.deleteCalendarObject({
+      calendarObject: {
+        url,
+        etag: resolvedEtag!,
+      },
+    });
 
     // Check response
     if (!response.ok) {
@@ -693,17 +684,14 @@ export class CalendarService {
     // Update PARTSTAT in iCalendar using helper function
     const updatedIcal = updateAttendeePartstat(rawIcal, attendeeEmail, response);
 
-    // PUT to inbox URL with ETag for optimistic concurrency
-    const httpResponse = await withRetry(
-      () => this.client.updateCalendarObject({
-        calendarObject: {
-          url: invitationUrl,
-          data: updatedIcal,
-          etag,
-        },
-      }),
-      this.logger
-    );
+    // PUT to inbox URL with ETag for optimistic concurrency. No retry: see createEvent
+    const httpResponse = await this.client.updateCalendarObject({
+      calendarObject: {
+        url: invitationUrl,
+        data: updatedIcal,
+        etag,
+      },
+    });
 
     // Check response status
     if (!httpResponse.ok) {
