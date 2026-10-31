@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/mcp-twake-dav)](https://www.npmjs.com/package/mcp-twake-dav)
 [![CI](https://github.com/linagora/mcp-twake-dav/actions/workflows/ci.yml/badge.svg)](https://github.com/linagora/mcp-twake-dav/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
+[![Node.js >= 20.3](https://img.shields.io/badge/node-%3E%3D20.3-brightgreen.svg)](https://nodejs.org/)
 
 **Give your AI assistant secure access to Twake Calendar and your contacts, in the [Twake.ai](https://twake.ai) Digital Workplace.**
 
@@ -59,14 +59,14 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 - **Recurring events**: RRULE expansion with safety limits, single-occurrence edits and deletions, and an opt-out (`DAV_RECURRING_WRITES=false`) for cautious deployments.
 - **Reliable updates**: events are found by UID with a server-side query; updates use parse-modify-serialize, so alarms, attendees and `X-` properties are preserved.
 - **Status display**: cancelled and tentative events, attendee participation status.
-- **No false answers**: a DAV request that fails or times out (30 seconds) is reported to the assistant as an error, never as an empty result. Cancelling a tool call cancels its requests. Only 429, 503 and network errors are retried.
+- **No false answers**: a DAV read that fails or times out (30 seconds), including an error inside a 207, is reported to the assistant as an error, not as an empty result. Objects that could not be read are named next to the result. Cancelling a tool call cancels its requests. A read is retried only on 429, 503 and network errors, `Retry-After` honoured up to 10 seconds. A write is never retried: without an answer, the assistant is told its outcome is unknown.
 - **Five authentication methods**: Basic, Bearer, OpenPaaS ESNToken, **token command** (short-lived tokens refreshed before every call) and an external credentials file.
 - **Reverse proxy support**: `DAV_HREF_PREFIX` for servers published under a path prefix that their responses omit (Twake Calendar / OpenPaaS).
 - CTag-based caching, retries with backoff, natural-language dates ([chrono-node](https://github.com/wanasit/chrono)), HTTPS enforced.
 
 ## Requirements
 
-- **Node.js** >= 20
+- **Node.js** >= 20.3
 - A **CalDAV / CardDAV server**: Twake Calendar, Nextcloud, SOGo, DAViCal, ownCloud… (HTTPS required, except `localhost`)
 - An **MCP client**: Claude Desktop, Claude Code, Hermes Agent, Cursor, VS Code, or any MCP-compatible assistant
 

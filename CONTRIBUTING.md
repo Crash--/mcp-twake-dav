@@ -14,7 +14,7 @@ By participating, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Development setup
 
-Requirements: Node.js >= 20 and npm.
+Requirements: Node.js >= 20.3 and npm.
 
 ```bash
 git clone https://github.com/linagora/mcp-twake-dav.git

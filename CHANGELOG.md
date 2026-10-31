@@ -5,8 +5,12 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 ## [Unreleased]
 
 ### Fixed
-- A failing DAV read (401, 413, 429, 500, multiget included) or an unknown calendar or address book name is an error for the assistant, no longer an empty result.
-- Every DAV request has a 30 second timeout and is cancelled with its tool call. `Retry-After` is honoured, and only 429, 503 and network errors are retried.
+- A failing DAV read (401, 413, 429, 500, multiget included, or an error inside a 207) or an unknown calendar or address book name is an error for the assistant, no longer an empty result. Objects that could not be read are named next to the result.
+- Every DAV request has a 30 second timeout and is cancelled with its tool call. A read is retried only on 429, 503 and network errors, and `Retry-After` is honoured up to 10 seconds.
+- PUT and DELETE are never retried. A write without an answer says that its outcome is unknown and must be checked first.
+
+### Changed
+- Node.js >= 20.3 is required (`AbortSignal.any`).
 
 ## [3.1.0] - 2026-10-31
 
