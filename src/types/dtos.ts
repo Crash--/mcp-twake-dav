@@ -277,6 +277,8 @@ export interface InvitationDTO {
   userPartstat: string;
   /** The address under which the current user is an attendee */
   attendeeEmail?: string;
+  /** This is one occurrence of a series, not the series */
+  isOccurrence?: boolean;
   /** CalDAV object URL for responding */
   url: string;
   /** HTTP ETag for optimistic concurrency */

@@ -9,10 +9,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
-
-const DAY_MS = 86_400_000;
-const DEFAULT_WINDOW_DAYS = 7;
-const MAX_WINDOW_DAYS = 92;
+import { checkWindow, parseDateRange, DEFAULT_WINDOW_DAYS, ISO_DATE_HELP, MAX_WINDOW_DAYS } from './utils.js';
 
 /**
  * Register the list_invitations tool
@@ -32,8 +29,8 @@ export function registerListInvitationsTool(
     'list_invitations',
     `List pending calendar invitations awaiting your response, for events in a date range (the next ${DEFAULT_WINDOW_DAYS} days by default, ${MAX_WINDOW_DAYS} days at most). Shows organizer, event title, proposed time, and location for each invitation that needs a response (PARTSTAT=NEEDS-ACTION). When the response has a nextOffset, more invitations remain. After listing, ask the user: "Would you like to accept or decline any of these?"`,
     {
-      start: z.string().datetime({ offset: true }).optional().describe('Start of the range, ISO 8601 with an offset. Defaults to now.'),
-      end: z.string().datetime({ offset: true }).optional().describe(`End of the range, ISO 8601 with an offset. Defaults to ${DEFAULT_WINDOW_DAYS} days after the start.`),
+      start: z.string().optional().describe(`Start of the range, defaults to now. ${ISO_DATE_HELP}`),
+      end: z.string().optional().describe(`End of the range, a date alone includes that whole day. Defaults to ${DEFAULT_WINDOW_DAYS} days after the start.`),
       limit: z.number().int().min(1).max(100).optional().describe('Maximum number of invitations to return (default 30, maximum 100).'),
       offset: z.number().int().min(0).optional().describe('The nextOffset of the previous response. Repeat the same dates with it.'),
     },
@@ -46,23 +43,17 @@ export function registerListInvitationsTool(
       try {
         logger.debug({ params }, 'list_invitations called');
 
-        const startMs = params.start ? Date.parse(params.start) : Date.now();
-        const endMs = params.end ? Date.parse(params.end) : startMs + DEFAULT_WINDOW_DAYS * DAY_MS;
-        if (endMs <= startMs || endMs - startMs > MAX_WINDOW_DAYS * DAY_MS) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `The end of the date range must be after its start, ${MAX_WINDOW_DAYS} days at most. Ask for the following days in another call.`,
-            }],
-            isError: true,
-          };
+        const timeRange = parseDateRange(params.start, params.end, DEFAULT_WINDOW_DAYS, userTimezone);
+        if ('problem' in timeRange) {
+          return { content: [{ type: 'text' as const, text: timeRange.problem }], isError: true };
+        }
+        const windowProblem = checkWindow(timeRange);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
         }
 
         // Query pending invitations
-        const pending = await calendarService.listPendingInvitations({
-          start: new Date(startMs).toISOString(),
-          end: new Date(endMs).toISOString(),
-        });
+        const pending = await calendarService.listPendingInvitations(timeRange, userTimezone);
         const limit = params.limit ?? 30;
         const offset = params.offset ?? 0;
         const invitations = pending.slice(offset, offset + limit);
@@ -73,7 +64,7 @@ export function registerListInvitationsTool(
           return {
             content: [{
               type: 'text' as const,
-              text: `No pending invitations between ${new Date(startMs).toISOString()} and ${new Date(endMs).toISOString()}.`,
+              text: `No pending invitations between ${timeRange.start} and ${timeRange.end}.`,
             }],
           };
         }
@@ -85,7 +76,7 @@ export function registerListInvitationsTool(
           const endStr = inv.proposedEnd.toLocaleString('en-US', { timeZone: displayTimezone });
           const location = inv.location ? `\n  Location: ${inv.location}` : '';
 
-          return `- ${inv.summary}
+          return `- ${inv.summary}${inv.isOccurrence ? ' (one occurrence of a series)' : ''}
   Organizer: ${inv.organizer.name} <${inv.organizer.email}>
   When: ${startStr} - ${endStr}${location}
   UID: ${inv.uid}`;

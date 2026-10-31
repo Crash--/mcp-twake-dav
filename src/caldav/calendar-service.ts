@@ -20,7 +20,7 @@ import { ConflictError, DavHttpError } from '../errors.js';
 import { addReadWarning, answersJson, hasPartialRead } from './dav-fetch.js';
 import { davFetch } from './href-prefix.js';
 import { transformCalendarObject } from '../transformers/event.js';
-import { transformInvitation, type InboxResponse } from '../transformers/invitation.js';
+import { transformInvitations, type InboxResponse } from '../transformers/invitation.js';
 import { updateAttendeePartstat } from '../transformers/event-builder.js';
 import type { EventDTO, InvitationDTO } from '../types/dtos.js';
 
@@ -63,6 +63,7 @@ export class CalendarService {
   private calendars: DAVCalendar[] = [];
   private calendarsListedAt = 0;
   private userEmails: string[] | undefined = undefined;
+  private principalPath: string | undefined = undefined;
   private hasJsonApi: boolean | undefined = undefined;
 
   /**
@@ -710,7 +711,30 @@ export class CalendarService {
       throw new Error('The server does not give the address of this user, so invitations cannot be checked.');
     }
     this.userEmails = emails;
+    this.principalPath = new URL(account.principalUrl as string).pathname.replace(/\/$/, '');
     return emails;
+  }
+
+  /**
+   * The calendars this user owns. A calendar delegated by someone else holds their copy
+   * of an event: answering there would answer in their name, or be refused.
+   * A server that gives no owner is taken as a calendar of the user.
+   */
+  private async getOwnCalendars(): Promise<DAVCalendar[]> {
+    await this.getUserEmails();
+    const calendars = await this.listCalendars();
+    const owned = await Promise.all(calendars.map(async (calendar) => {
+      const [response] = await withRetry(
+        () => this.client.propfind({ url: calendar.url, depth: '0', props: { 'd:owner': {} } }),
+        this.logger
+      );
+      const owner = response?.props?.owner?.href as string | undefined;
+      if (!owner) return true;
+      const ownerPath = new URL(owner, calendar.url).pathname.replace(/\/$/, '');
+      const principal = this.principalPath as string;
+      return ownerPath.endsWith(principal) || principal.endsWith(ownerPath);
+    }));
+    return calendars.filter((_, index) => owned[index]);
   }
 
   /**
@@ -721,11 +745,12 @@ export class CalendarService {
    * scheduling inbox only holds the iTIP messages, which cannot be answered.
    *
    * @param timeRange - Time range of the proposed events
+   * @param userTimezone - Time zone of the user, for dates without a zone
    * @returns Pending invitations, sorted by proposed start
    */
-  async listPendingInvitations(timeRange: TimeRange): Promise<InvitationDTO[]> {
+  async listPendingInvitations(timeRange: TimeRange, userTimezone?: string): Promise<InvitationDTO[]> {
     const userEmails = await this.getUserEmails();
-    const calendars = await this.listCalendars();
+    const calendars = await this.getOwnCalendars();
     const icalTime = (iso: string) => `${new Date(iso).toISOString().slice(0, 19).replace(/[-:]/g, '')}Z`;
 
     const invitations: InvitationDTO[] = [];
@@ -756,16 +781,22 @@ export class CalendarService {
       );
 
       for (const resp of responses) {
-        if (!resp.ok) throw new DavHttpError(resp.status);
+        if (!resp.href) continue;
         const calendarData = resp.props?.calendarData?._cdata ?? resp.props?.calendarData;
-        if (!resp.href || !calendarData) continue;
         const inboxResp: InboxResponse = {
           href: new URL(resp.href, calendar.url).href,
           props: { getetag: resp.props?.getetag as string | undefined, calendarData },
         };
-        const invitation = transformInvitation(inboxResp, userEmails, this.logger);
-        // The filter also matches events where only another attendee has not answered.
-        if (invitation?.userPartstat.toUpperCase() === 'NEEDS-ACTION') invitations.push(invitation);
+        try {
+          // The filter also matches events where only another attendee has not answered.
+          invitations.push(
+            ...transformInvitations(inboxResp, userEmails, this.logger, { timeRange, userTimezone })
+              .filter((invitation) => invitation.userPartstat === 'NEEDS-ACTION')
+          );
+        } catch (err) {
+          this.logger.warn({ err, href: resp.href }, 'Unreadable invitation');
+          addReadWarning(`The event ${resp.href.split('/').pop()} could not be read, and may be an invitation.`);
+        }
       }
     }
 
@@ -789,20 +820,32 @@ export class CalendarService {
   async respondToInvitation(
     uid: string,
     response: 'ACCEPTED' | 'DECLINED' | 'TENTATIVE',
+    userTimezone?: string,
   ): Promise<InvitationDTO> {
-    const event = await this.findEventByUid(uid);
-    if (!event) {
+    const userEmails = await this.getUserEmails();
+    const events: EventDTO[] = [];
+    for (const calendar of await this.getOwnCalendars()) {
+      events.push(...await this.queryUid(calendar, uid));
+    }
+    if (events.length === 0) {
       throw new Error(`Invitation not found with UID: ${uid}\n\nFix: Use list_invitations to see pending invitations and their UIDs.`);
     }
-    const userEmails = await this.getUserEmails();
-    const invitation = transformInvitation(
-      { href: event.url, props: { getetag: event.etag, calendarData: event._raw } },
-      userEmails,
-      this.logger,
-    );
-    if (!invitation || !invitation.userPartstat) {
+    const attended = events.flatMap((event) => {
+      const [first] = transformInvitations(
+        { href: event.url, props: { getetag: event.etag, calendarData: event._raw } },
+        userEmails,
+        this.logger,
+        { userTimezone },
+      );
+      return first ? [{ event, invitation: first }] : [];
+    });
+    if (attended.length === 0) {
       throw new Error(`You are not an attendee of the event with UID: ${uid}.`);
     }
+    if (attended.length > 1) {
+      throw new Error(`The UID ${uid} is in several of your calendars, so this cannot answer for one of them. Answer it in the calendar application.`);
+    }
+    const [{ event, invitation }] = attended;
     const invitationUrl = invitation.url;
     const etag = invitation.etag;
     const attendeeEmail = invitation.attendeeEmail as string;

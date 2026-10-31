@@ -130,3 +130,125 @@ describe('invitations', () => {
     expect(dav.requests.some((r) => r.method === 'PUT')).toBe(false);
   });
 });
+
+describe('invitations with several VEVENTs and delegated calendars', () => {
+  let dav: FakeDav;
+  let client: Client;
+
+  beforeAll(async () => {
+    dav = await startFakeDav(['Perso', 'Boss']);
+    const config = { DAV_URL: dav.url, DAV_AUTH_METHOD: 'bearer', DAV_TOKEN: 't' } as Config;
+    const clients = await createDualClients(config, logger);
+    const server = createServer(new CalendarService(clients.caldav, logger, config), new AddressBookService(clients.carddav, logger), logger, undefined, undefined, 'Europe/Paris');
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    client = new Client({ name: 'test', version: '1' }, { capabilities: {} });
+    await client.connect(clientTransport);
+  });
+
+  afterAll(async () => {
+    await client.close();
+    await dav.close();
+  });
+
+  beforeEach(() => {
+    dav.requests.length = 0;
+  });
+
+  const vevent = (...lines: string[]) => ['BEGIN:VEVENT', 'UID:s', 'DTSTAMP:20260101T000000Z', 'SUMMARY:series', 'ORGANIZER:mailto:boss@example.com', ...lines, 'END:VEVENT'];
+  const object = (...vevents: string[][]) => ['BEGIN:VCALENDAR', 'VERSION:2.0', ...vevents.flat(), 'END:VCALENDAR', ''].join('\r\n');
+  const me = (partstat: string) => `ATTENDEE;PARTSTAT=${partstat}:mailto:${ME}`;
+  const master = (partstat: string, start = '20200101T100000Z') => vevent(`DTSTART:${start}`, 'DURATION:PT1H', 'RRULE:FREQ=DAILY', me(partstat));
+  const exception = (partstat: string, ...lines: string[]) =>
+    vevent('RECURRENCE-ID:20261105T100000Z', 'DTSTART:20261105T150000Z', 'DURATION:PT1H', 'SUMMARY:moved', me(partstat), ...lines);
+
+  /** Serves `data` from the Perso calendar, and the owner of each calendar. */
+  const serve = (data: string, delegated?: string) => {
+    dav.handler = (req, res) => {
+      const owner = addressSet(req);
+      if (owner) return owner;
+      if (req.method === 'PROPFIND' && req.body.includes('owner')) {
+        const who = req.url.includes('/Boss/') ? '/principals/boss/' : '/principals/u1/';
+        return { status: 207, headers: XML, body: `<d:multistatus xmlns:d="DAV:"><d:response><d:href>${req.url}</d:href><d:propstat><d:prop><d:owner><d:href>${who}</d:href></d:owner></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>` };
+      }
+      if (req.method === 'PUT') {
+        res.setHeader('etag', '"new"');
+        return { status: 204 };
+      }
+      if (req.method !== 'REPORT') return null;
+      if (req.url.includes('/Boss/')) return calendarObjects(delegated ? [{ href: '/calendars/u1/Boss/copy.ics', ical: delegated }] : []);
+      return calendarObjects([{ href: '/calendars/u1/Perso/a.ics', ical: data }]);
+    };
+  };
+  const list = async (args: Record<string, unknown> = { start: '2026-11-01', end: '2026-11-30' }) =>
+    ((await client.callTool({ name: 'list_invitations', arguments: args })).content as Array<{ text: string }>).map((c) => c.text).join('\n');
+  const answer = async () => {
+    const result = await client.callTool({ name: 'respond_to_invitation', arguments: { uid: 's', response: 'accept' } });
+    return { isError: result.isError, text: (result.content as Array<{ text: string }>)[0].text };
+  };
+
+  it('lists an invitation to a single occurrence, without its master', async () => {
+    serve(object(exception('NEEDS-ACTION')));
+    const text = await list();
+    expect(text).toContain('(one occurrence of a series)');
+  });
+
+  it('lists an exception waiting when the series is answered', async () => {
+    serve(object(master('ACCEPTED'), exception('NEEDS-ACTION')));
+    const text = await list();
+    expect(text).toContain('Pending invitations (1 in this page)');
+    expect(text).toContain('(one occurrence of a series)');
+  });
+
+  it('does not list what was cancelled', async () => {
+    serve(object(vevent('DTSTART:20261105T100000Z', 'DURATION:PT1H', 'STATUS:CANCELLED', me('NEEDS-ACTION'))));
+    expect(await list()).toContain('No pending invitations');
+  });
+
+  it('shows a series at its next date in the range, not at its first', async () => {
+    serve(object(master('NEEDS-ACTION')));
+    const text = await list();
+    expect(text).toContain('11/1/2026');
+    expect(text).not.toContain('2020');
+  });
+
+  it('answers the series and the occurrences still waiting, not the others', async () => {
+    const other = vevent('RECURRENCE-ID:20261106T100000Z', 'DTSTART:20261106T100000Z', 'DURATION:PT1H', me('DECLINED'));
+    serve(object(master('NEEDS-ACTION'), exception('NEEDS-ACTION'), other));
+    expect((await answer()).isError).toBeFalsy();
+    const body = dav.requests.find((r) => r.method === 'PUT')!.body.replace(/\r\n /g, '');
+    expect(body.match(/PARTSTAT=ACCEPTED/g)).toHaveLength(2);
+    expect(body.match(/PARTSTAT=DECLINED/g)).toHaveLength(1);
+    expect(body).not.toContain('NEEDS-ACTION');
+  });
+
+  it('answers an invitation to a single occurrence', async () => {
+    serve(object(exception('NEEDS-ACTION')));
+    expect((await answer()).isError).toBeFalsy();
+    expect(dav.requests.find((r) => r.method === 'PUT')!.body.replace(/\r\n /g, '')).toContain('PARTSTAT=ACCEPTED');
+  });
+
+  it('answers on its own copy, never on the delegated one', async () => {
+    serve(object(master('NEEDS-ACTION')), object(master('NEEDS-ACTION')));
+    expect((await answer()).isError).toBeFalsy();
+    expect(dav.requests.filter((r) => r.method === 'PUT').map((r) => r.url)).toEqual(['/calendars/u1/Perso/a.ics']);
+    expect(dav.requests.filter((r) => r.method === 'REPORT').some((r) => r.url.includes('/Boss/'))).toBe(false);
+  });
+
+  it('does not list the copy of a delegated calendar', async () => {
+    serve(object(master('ACCEPTED')), object(master('NEEDS-ACTION')));
+    expect(await list()).toContain('No pending invitations');
+  });
+
+  it('reads dates in the user time zone', async () => {
+    serve(object(vevent('DTSTART:20261105T100000Z', 'DURATION:PT1H', me('NEEDS-ACTION'))));
+    expect(await list({ start: '2026-11-05', end: '2026-11-05' })).toContain('11:00:00 AM');
+  });
+
+  it('warns about an object it cannot read, since it may be an invitation', async () => {
+    serve('not ical');
+    const text = await list();
+    expect(text).toContain('a.ics');
+    expect(text).toContain('incomplete');
+  });
+});

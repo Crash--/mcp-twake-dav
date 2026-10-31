@@ -23,6 +23,7 @@ export function registerRespondInvitationTool(
   server: McpServer,
   calendarService: CalendarService,
   logger: Logger,
+  userTimezone?: string,
 ): void {
   server.tool(
     'respond_to_invitation',
@@ -54,10 +55,10 @@ export function registerRespondInvitationTool(
         const partstat = partstatMap[params.response];
 
         // Respond to invitation
-        const invitation = await calendarService.respondToInvitation(params.uid, partstat);
+        const invitation = await calendarService.respondToInvitation(params.uid, partstat, userTimezone);
 
         // Build response message
-        const responseText = buildResponseMessage(invitation, params.response, partstat);
+        const responseText = buildResponseMessage(invitation, params.response, partstat, userTimezone);
 
         logger.info(
           { uid: params.uid, response: partstat },
@@ -103,7 +104,8 @@ export function registerRespondInvitationTool(
 function buildResponseMessage(
   invitation: InvitationDTO,
   response: string,
-  partstat: string
+  partstat: string,
+  userTimezone?: string,
 ): string {
   const actionVerb: Record<string, string> = {
     accept: 'accepted',
@@ -112,8 +114,8 @@ function buildResponseMessage(
   };
   const action = actionVerb[response] || response;
 
-  const startStr = invitation.proposedStart.toLocaleString();
-  const endStr = invitation.proposedEnd.toLocaleString();
+  const startStr = invitation.proposedStart.toLocaleString('en-US', { timeZone: userTimezone });
+  const endStr = invitation.proposedEnd.toLocaleString('en-US', { timeZone: userTimezone });
 
   return `Invitation ${action}!\n\n` +
     `Event: ${invitation.summary}\n` +
