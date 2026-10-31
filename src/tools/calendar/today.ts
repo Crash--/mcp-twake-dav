@@ -11,8 +11,7 @@ import type { CalendarService } from '../../caldav/calendar-service.js';
 import {
   getEventsWithRecurrenceExpansion,
   formatEvent,
-  getStartOfDay,
-  getEndOfDay,
+  todayRange,
   resolveCalendarEvents,
   paginationParams,
   checkWindow,
@@ -54,15 +53,7 @@ export function registerTodaysScheduleTool(
       try {
         logger.debug('get_todays_schedule called');
 
-        // Create time range: start of today to end of today
-        const now = new Date();
-        const startOfDay = getStartOfDay(now);
-        const endOfDay = getEndOfDay(now);
-
-        const timeRange = {
-          start: startOfDay.toISOString(),
-          end: endOfDay.toISOString(),
-        };
+        const timeRange = todayRange(userTimezone);
 
         const windowProblem = checkWindow(timeRange, params.cursor);
         if (windowProblem) {

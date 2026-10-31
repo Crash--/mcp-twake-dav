@@ -11,7 +11,6 @@
  * - Recurrence expansion integration with Phase 2 transformers
  */
 
-import * as chrono from 'chrono-node';
 import ICAL from 'ical.js';
 import { z } from 'zod';
 import type { Logger } from 'pino';
@@ -22,72 +21,81 @@ import { addReadWarning } from '../../caldav/dav-fetch.js';
 import { transformCalendarObject } from '../../transformers/event.js';
 import { expandRecurringEvent } from '../../transformers/recurrence.js';
 
-/**
- * Get start of day (00:00:00.000) for a given date
- *
- * @param date - Date to get start of day for
- * @returns Date set to 00:00:00.000
- */
-export function getStartOfDay(date: Date): Date {
-  const result = new Date(date);
-  result.setHours(0, 0, 0, 0);
-  return result;
+const DAY_MS = 86_400_000;
+
+/** The wall clock of `timeZone` at `instant`, as if it were UTC. */
+function wallClockMs(instant: number, timeZone?: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+  }).formatToParts(instant);
+  const part = (type: string) => Number(parts.find((p) => p.type === type)!.value);
+  return Date.UTC(part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second'));
 }
 
-/**
- * Get end of day (23:59:59.999) for a given date
- *
- * @param date - Date to get end of day for
- * @returns Date set to 23:59:59.999
- */
-export function getEndOfDay(date: Date): Date {
-  const result = new Date(date);
-  result.setHours(23, 59, 59, 999);
-  return result;
+/** The instant at which `timeZone` shows this wall clock. */
+function wallClockToInstant(wallClock: number, timeZone?: string): number {
+  const offset = (instant: number) => wallClockMs(instant, timeZone) - Math.floor(instant / 1000) * 1000;
+  return wallClock - offset(wallClock - offset(wallClock));
 }
 
+const ISO_INPUT = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
 /**
- * Parse natural language date expression into TimeRange
+ * Read an ISO 8601 date. Without an offset it is a wall clock of `timeZone`. A
+ * date alone means the start of that day, or the end of it when `asEnd` is set.
  *
- * Uses chrono-node to parse expressions like:
- * - "tomorrow", "next week", "this Friday"
- * - "January 15 to January 20"
- * - "today", "this week"
- *
- * @param expression - Natural language date expression
- * @returns TimeRange with ISO 8601 start/end, or null if parsing fails
+ * @returns Milliseconds since the epoch, or null if the value is not a valid date
  */
-export function parseNaturalDateRange(expression: string): TimeRange | null {
-  // Parse with chrono-node (forwardDate: true for future bias, explicit reference date)
-  const results = chrono.parse(expression, new Date(), { forwardDate: true });
-
-  // Return null if chrono couldn't parse the expression
-  if (results.length === 0) {
-    return null;
+function parseIsoInput(value: string, timeZone: string | undefined, asEnd: boolean): number | null {
+  const match = ISO_INPUT.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, offset] = match;
+  const wallClock = Date.UTC(+year, +month - 1, +day, +(hour ?? 0), +(minute ?? 0), +(second ?? 0));
+  // Date.UTC rolls February 31 over to March.
+  if (new Date(wallClock).getUTCDate() !== +day) return null;
+  if (offset) {
+    const instant = Date.parse(value);
+    return Number.isNaN(instant) ? null : instant;
   }
+  return wallClockToInstant(hour === undefined && asEnd ? wallClock + DAY_MS : wallClock, timeZone);
+}
 
-  // Get first parse result
-  const result = results[0];
-
-  // Determine start and end dates
-  let startDate: Date;
-  let endDate: Date;
-
-  if (result.end) {
-    // Range expression (e.g., "January 15 to January 20")
-    startDate = getStartOfDay(result.start.date());
-    endDate = getEndOfDay(result.end.date());
-  } else {
-    // Single date expression (e.g., "tomorrow") - expand to full day
-    startDate = getStartOfDay(result.start.date());
-    endDate = getEndOfDay(result.start.date());
-  }
-
-  // Return as TimeRange with ISO 8601 strings
+/** Today in `timeZone`, from its first instant to the first instant of tomorrow. */
+export function todayRange(timeZone?: string): TimeRange {
+  const midnight = Math.floor(wallClockMs(Date.now(), timeZone) / DAY_MS) * DAY_MS;
   return {
-    start: startDate.toISOString(),
-    end: endDate.toISOString(),
+    start: new Date(wallClockToInstant(midnight, timeZone)).toISOString(),
+    end: new Date(wallClockToInstant(midnight + DAY_MS, timeZone)).toISOString(),
   };
+}
+
+export const ISO_DATE_HELP =
+  'ISO 8601: 2026-11-03, 2026-11-03T14:00, or with an offset such as 2026-11-03T14:00:00Z. Without an offset, the user time zone applies.';
+
+/**
+ * Turn the `start` and `end` of a tool call into a time range. A missing end is
+ * `start` plus the default window, a missing start is now.
+ *
+ * @returns The range, or the problem to report to the model
+ */
+export function parseDateRange(
+  start: string | undefined,
+  end: string | undefined,
+  defaultDays: number,
+  timeZone?: string,
+): TimeRange | { problem: string } {
+  const startMs = start === undefined ? Date.now() : parseIsoInput(start, timeZone, false);
+  if (startMs === null) return { problem: `Could not read the start date "${start}". Use ${ISO_DATE_HELP}` };
+  const endMs = end === undefined ? startMs + defaultDays * DAY_MS : parseIsoInput(end, timeZone, true);
+  if (endMs === null) return { problem: `Could not read the end date "${end}". Use ${ISO_DATE_HELP}` };
+  return { start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
 }
 
 /**

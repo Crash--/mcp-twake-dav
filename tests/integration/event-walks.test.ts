@@ -73,7 +73,7 @@ describe('walks', () => {
     }
     throw new Error('the walk does not end');
   }
-  const range = { when: '2026-11-01 to 2027-01-29' };
+  const range = { start: '2026-11-01', end: '2027-01-29' };
   const days = (seen: string[]) => new Set(seen).size;
 
   it.each([1, 2, 7, 50])('a series of 90 days with a cancelled day gives 89, at limit %i', async (limit) => {

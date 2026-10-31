@@ -1,7 +1,7 @@
 /**
  * MCP tool: get_events_in_range (CAL-03)
  *
- * Get calendar events for a date range using natural language parsing.
+ * Get calendar events for a date range, one page at a time.
  */
 
 import { z } from 'zod';
@@ -11,7 +11,8 @@ import type { CalendarService } from '../../caldav/calendar-service.js';
 import {
   getEventsWithRecurrenceExpansion,
   formatEvent,
-  parseNaturalDateRange,
+  parseDateRange,
+  ISO_DATE_HELP,
   resolveCalendarEvents,
   paginationParams,
   checkWindow,
@@ -38,9 +39,10 @@ export function registerDateRangeTool(
 ): void {
   server.tool(
     'get_events_in_range',
-    `Get calendar events for a date range, sorted by start, one page at a time. Without dates, covers the next ${DEFAULT_WINDOW_DAYS} days; a range covers ${MAX_WINDOW_DAYS} days at most. When the response has a nextCursor, more events remain. Optionally filter by calendar name.`,
+    `Get the calendar events overlapping a date range, sorted by start, one page at a time. Without dates, covers the next ${DEFAULT_WINDOW_DAYS} days; a range covers ${MAX_WINDOW_DAYS} days at most. When the response has a nextCursor, more events remain. Optionally filter by calendar name.`,
     {
-      when: z.string().optional().describe(`Date range expression: \'tomorrow\', \'January 15 to January 20\', etc. Defaults to the next ${DEFAULT_WINDOW_DAYS} days.`),
+      start: z.string().optional().describe(`Start of the range, defaults to now. ${ISO_DATE_HELP}`),
+      end: z.string().optional().describe(`End of the range, a date alone includes that whole day. Defaults to ${DEFAULT_WINDOW_DAYS} days after the start.`),
       ...paginationParams,
       calendar: z.string().optional().describe(
         'Calendar name to search in. Use "all" to search all calendars. ' +
@@ -56,25 +58,11 @@ export function registerDateRangeTool(
       try {
         logger.debug({ params }, 'get_events_in_range called');
 
-        // Parse natural language date expression
-        const now = Date.now();
-        const timeRange = params.when
-          ? parseNaturalDateRange(params.when)
-          : { start: new Date(now).toISOString(), end: new Date(now + DEFAULT_WINDOW_DAYS * 86_400_000).toISOString() };
-        const label = params.when ?? `the next ${DEFAULT_WINDOW_DAYS} days`;
-
-        if (!timeRange) {
-          logger.warn({ when: params.when }, 'Could not parse date range');
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `Could not understand the date range: '${params.when}'. Try 'this week', 'next month', 'tomorrow', or a specific date.`,
-              },
-            ],
-            isError: true,
-          };
+        const timeRange = parseDateRange(params.start, params.end, DEFAULT_WINDOW_DAYS, userTimezone);
+        if ('problem' in timeRange) {
+          return { content: [{ type: 'text' as const, text: timeRange.problem }], isError: true };
         }
+        const label = `${timeRange.start} to ${timeRange.end}`;
 
         const windowProblem = checkWindow(timeRange, params.cursor);
         if (windowProblem) {
