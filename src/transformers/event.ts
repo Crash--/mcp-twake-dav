@@ -41,8 +41,9 @@ export function transformCalendarObject(
     // (see 02-RESEARCH.md Pitfall 3 - DST conversion errors)
     registerTimezones(comp, logger);
 
-    // Extract VEVENT component
-    const vevent = comp.getFirstSubcomponent('vevent');
+    // Extract VEVENT component: the master of a series, wherever it is in the object
+    const vevents = comp.getAllSubcomponents('vevent');
+    const vevent = vevents.find((v: ICAL.Component) => !v.hasProperty('recurrence-id')) ?? vevents[0];
     if (!vevent) {
       logger.debug({ url: davObject.url }, 'No VEVENT component found in iCalendar data');
       return null;

@@ -155,3 +155,55 @@ describe('winter time', () => {
     vi.useRealTimers();
   });
 });
+
+describe('exceptions of a series with a TZID', () => {
+  const VTZ = [
+    'BEGIN:VTIMEZONE', 'TZID:Europe/Paris',
+    'BEGIN:DAYLIGHT', 'TZOFFSETFROM:+0100', 'TZOFFSETTO:+0200', 'TZNAME:CEST', 'DTSTART:19700329T020000', 'RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3', 'END:DAYLIGHT',
+    'BEGIN:STANDARD', 'TZOFFSETFROM:+0200', 'TZOFFSETTO:+0100', 'TZNAME:CET', 'DTSTART:19701025T030000', 'RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10', 'END:STANDARD',
+    'END:VTIMEZONE',
+  ];
+  const master = ['BEGIN:VEVENT', 'UID:s', 'DTSTAMP:20260101T000000Z', 'SUMMARY:series', 'DTSTART;TZID=Europe/Paris:20261102T090000', 'DTEND;TZID=Europe/Paris:20261102T100000', 'RRULE:FREQ=DAILY', 'END:VEVENT'];
+  const exception = (...lines: string[]) => ['BEGIN:VEVENT', 'UID:s', 'DTSTAMP:20260101T000000Z', 'RECURRENCE-ID;TZID=Europe/Paris:20261103T090000', ...lines, 'END:VEVENT'];
+  const object = (...vevents: string[][]) => ({
+    url: 'https://dav.example.com/cal/s.ics',
+    etag: 'e',
+    data: ['BEGIN:VCALENDAR', 'VERSION:2.0', ...VTZ, ...vevents.flat(), 'END:VCALENDAR', ''].join('\r\n'),
+  });
+  const parisDay = (date: string) => parseDateRange(date, date, 7, PARIS) as { start: string; end: string };
+  const on = (date: string, ...vevents: string[][]) =>
+    getEventsWithRecurrenceExpansion([object(...vevents)], parisDay(date), logger, PARIS)
+      .map((e) => `${e.summary} ${e.startDate.toISOString()}`);
+
+  it('drops a cancelled occurrence', () => {
+    expect(on('2026-11-03', master, exception('SUMMARY:gone', 'DTSTART;TZID=Europe/Paris:20261103T090000', 'DTEND;TZID=Europe/Paris:20261103T100000', 'STATUS:CANCELLED'))).toEqual([]);
+  });
+
+  it('shows an occurrence moved the same day at its new time and title', () => {
+    expect(on('2026-11-03', master, exception('SUMMARY:moved', 'DTSTART;TZID=Europe/Paris:20261103T150000', 'DTEND;TZID=Europe/Paris:20261103T160000')))
+      .toEqual(['moved 2026-11-03T14:00:00.000Z']);
+  });
+
+  it('moves an occurrence to another day, and only there', () => {
+    const moved = exception('SUMMARY:moved', 'DTSTART;TZID=Europe/Paris:20261110T150000', 'DTEND;TZID=Europe/Paris:20261110T160000');
+    expect(on('2026-11-03', master, moved)).toEqual([]);
+    expect(on('2026-11-10', master, moved)).toEqual(['series 2026-11-10T08:00:00.000Z', 'moved 2026-11-10T14:00:00.000Z']);
+  });
+
+  it('keeps the series when an exception comes before the master', () => {
+    const moved = exception('SUMMARY:moved', 'DTSTART;TZID=Europe/Paris:20261103T150000', 'DTEND;TZID=Europe/Paris:20261103T160000');
+    expect(on('2026-11-04', moved, master)).toEqual(['series 2026-11-04T08:00:00.000Z']);
+  });
+
+  it('shows an occurrence received without its master', () => {
+    const alone = exception('SUMMARY:invited', 'DTSTART;TZID=Europe/Paris:20261103T090000', 'DTEND;TZID=Europe/Paris:20261103T100000');
+    expect(on('2026-11-03', alone)).toEqual(['invited 2026-11-03T08:00:00.000Z']);
+  });
+
+  it('stays at the same local hour across the change to winter time', () => {
+    expect(on('2026-11-02', master)).toEqual(['series 2026-11-02T08:00:00.000Z']);
+    const summer = ['BEGIN:VEVENT', 'UID:s', 'DTSTAMP:20260101T000000Z', 'SUMMARY:series', 'DTSTART;TZID=Europe/Paris:20261020T090000', 'DTEND;TZID=Europe/Paris:20261020T100000', 'RRULE:FREQ=DAILY', 'END:VEVENT'];
+    expect(on('2026-10-24', summer)).toEqual(['series 2026-10-24T07:00:00.000Z']);
+    expect(on('2026-10-26', summer)).toEqual(['series 2026-10-26T08:00:00.000Z']);
+  });
+});
