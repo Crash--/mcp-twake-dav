@@ -86,8 +86,19 @@ describe('partial reads', () => {
 
   it('is an error when the named calendar cannot be read', async () => {
     dav.handler = (req) => (req.method === 'REPORT' ? refused : null);
-    const { isError } = await call('get_todays_schedule', { calendar: 'Shared' });
+    const { isError, text } = await call('get_todays_schedule', { calendar: 'Shared' });
     expect(isError).toBe(true);
+    expect(text).toContain('"Shared"');
+  });
+
+  it('check_availability names the only calendar when it refuses', async () => {
+    dav.handler = (req) => {
+      if (req.method !== 'REPORT') return null;
+      return req.body.includes('free-busy-query') ? { status: 403 } : refused;
+    };
+    const { isError, text } = await call('check_availability', { start: '2020-01-01T00:00:00Z', end: '2020-01-02T00:00:00Z', calendar: 'Shared' });
+    expect(isError).toBe(true);
+    expect(text).toContain('"Shared"');
   });
 
   it('check_availability does not say free when a calendar cannot be read', async () => {

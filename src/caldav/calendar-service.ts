@@ -240,7 +240,7 @@ export class CalendarService {
     if (!match) {
       throw new Error(`Calendar "${name}" not found.\n\nFix: Use list_calendars to see the available names.`);
     }
-    return this.fetchEvents(match, timeRange);
+    return this.fetchEventsFrom([match], timeRange);
   }
 
   /**
@@ -257,29 +257,7 @@ export class CalendarService {
     // Ensure calendars are loaded
     await this.listCalendars();
 
-    // Fetch from all calendars in parallel
-    const refused: DAVCalendar[] = [];
-    let lastRefusal: unknown;
-    const results = await Promise.all(
-      this.calendars.map(async (cal) => {
-        try {
-          return await this.fetchEvents(cal, timeRange);
-        } catch (err) {
-          // One calendar without read rights must not hide the others.
-          if (!(err instanceof DavHttpError) || err.status !== 403) throw err;
-          refused.push(cal);
-          lastRefusal = err;
-          return [];
-        }
-      })
-    );
-    if (refused.length === this.calendars.length && lastRefusal) throw lastRefusal;
-    for (const cal of refused) {
-      addReadWarning(`The calendar "${String(cal.displayName || cal.url)}" could not be read: this account has no read access to it (HTTP 403).`);
-    }
-
-    // Flatten results
-    const flattened = results.flat();
+    const flattened = await this.fetchEventsFrom(this.calendars, timeRange);
 
     this.logger.info(
       { calendarCount: this.calendars.length, totalObjects: flattened.length },
@@ -287,6 +265,32 @@ export class CalendarService {
     );
 
     return flattened;
+  }
+
+  /**
+   * Fetch events from these calendars in parallel. One without read rights must not
+   * hide the others: it is named next to the result, and in the error if all refuse.
+   */
+  async fetchEventsFrom(calendars: DAVCalendar[], timeRange?: TimeRange): Promise<DAVCalendarObject[]> {
+    const refused: string[] = [];
+    const results = await Promise.all(
+      calendars.map(async (cal) => {
+        try {
+          return await this.fetchEvents(cal, timeRange);
+        } catch (err) {
+          if (!(err instanceof DavHttpError) || err.status !== 403) throw err;
+          refused.push(`"${String(cal.displayName || cal.url)}"`);
+          return [];
+        }
+      })
+    );
+    if (refused.length === calendars.length && refused.length > 0) {
+      throw new DavHttpError(403, null, `on the calendar ${refused.join(', ')}`);
+    }
+    for (const name of refused) {
+      addReadWarning(`The calendar ${name} could not be read: this account has no read access to it (HTTP 403).`);
+    }
+    return results.flat();
   }
 
   /**
