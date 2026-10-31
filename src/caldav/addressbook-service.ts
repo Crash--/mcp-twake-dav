@@ -15,7 +15,8 @@ import type { DAVClientType } from './client.js';
 import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { discoverAddressBooks } from './discovery.js';
-import { ConflictError } from '../errors.js';
+import { ConflictError, isDavUnsupported } from '../errors.js';
+import { hasPartialRead } from './dav-fetch.js';
 import { transformVCard } from '../transformers/contact.js';
 import type { ContactDTO } from '../types/dtos.js';
 
@@ -140,16 +141,19 @@ export class AddressBookService {
       );
     }
 
-    // Fetch with retry
-    let vcards = await withRetry(
-      () => this.client.fetchVCards({ addressBook }),
-      this.logger
-    );
-
-    // IMPORTANT FALLBACK (Research Pitfall 5): If vcards is empty, retry without multiGet
+    // IMPORTANT FALLBACK (Research Pitfall 5): If vcards is empty or the server refuses, retry without multiGet
     // Some SabreDAV configurations don't support addressbook-multiget REPORT
+    let vcards: DAVVCard[] = [];
+    try {
+      vcards = await withRetry(
+        () => this.client.fetchVCards({ addressBook }),
+        this.logger
+      );
+    } catch (err) {
+      if (!isDavUnsupported(err)) throw err;
+    }
     if (vcards.length === 0) {
-      this.logger.info({ url: addressBook.url }, 'fetchVCards returned empty, retrying without multiGet');
+      this.logger.info({ url: addressBook.url }, 'fetchVCards returned nothing, retrying without multiGet');
       vcards = await withRetry(
         () => this.client.fetchVCards({ addressBook, useMultiGet: false }),
         this.logger
@@ -157,7 +161,7 @@ export class AddressBookService {
     }
 
     // Update cache
-    this.objectCache.set(addressBook.url, addressBook.ctag ?? '', vcards);
+    if (!hasPartialRead()) this.objectCache.set(addressBook.url, addressBook.ctag ?? '', vcards);
 
     this.logger.info({ url: addressBook.url, count: vcards.length }, 'Fetched address book contacts');
 
