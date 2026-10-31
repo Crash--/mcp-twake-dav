@@ -13,7 +13,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../caldav/calendar-service.js';
 import type { AddressBookService } from '../caldav/addressbook-service.js';
-import { runWithSignal } from '../caldav/dav-fetch.js';
+import { runToolCall } from '../caldav/dav-fetch.js';
 import { registerNextEventTool } from './calendar/next-event.js';
 import { registerTodaysScheduleTool } from './calendar/today.js';
 import { registerDateRangeTool } from './calendar/date-range.js';
@@ -85,10 +85,10 @@ export function registerAllTools(
   // Every handler gets the client's cancellation on its DAV requests.
   const registerTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
   server.tool = ((...args: unknown[]) => {
-    const handler = args.pop() as (...handlerArgs: unknown[]) => unknown;
+    const handler = args.pop() as (...handlerArgs: unknown[]) => { content: unknown[] };
     return registerTool(...args, (...handlerArgs: unknown[]) => {
       const { signal } = handlerArgs.at(-1) as { signal: AbortSignal };
-      return runWithSignal(signal, () => handler(...handlerArgs));
+      return runToolCall(signal, () => handler(...handlerArgs));
     });
   }) as typeof server.tool;
 

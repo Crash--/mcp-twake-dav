@@ -6,7 +6,7 @@
  */
 
 import type { Logger } from 'pino';
-import { DavHttpError, DavTimeoutError } from '../errors.js';
+import { DavHttpError, DavNetworkError } from '../errors.js';
 
 /**
  * Configuration options for retry behavior
@@ -32,11 +32,12 @@ const DEFAULT_OPTIONS: RetryOptions = {
   jitter: true,
 };
 
-/** Only overload statuses and network failures can succeed on a second try. */
+/**
+ * Only overload statuses and network failures can succeed on a second try.
+ */
 function isRetryable(error: unknown): boolean {
   if (error instanceof DavHttpError) return error.status === 429 || error.status === 503;
-  if (error instanceof DavTimeoutError) return false;
-  return (error as Error)?.name !== 'AbortError';
+  return error instanceof DavNetworkError;
 }
 
 function retryAfterMs(error: unknown): number {

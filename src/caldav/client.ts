@@ -17,6 +17,7 @@ import type { Logger } from '../config/logger.js';
 import { discoverCalendars, discoverAddressBooks } from './discovery.js';
 import { CommandTokenProvider } from './token-command.js';
 import { davFetch, installHrefPrefix } from './href-prefix.js';
+import { keepPartialReads } from './object-reads.js';
 
 /**
  * Command auth (DAV_AUTH_METHOD=command).
@@ -117,12 +118,12 @@ function getAuthConfig(config: Config) {
  * @returns Configured CalDAV client
  */
 export async function createCalDAVClient(config: Config): Promise<DAVClientType> {
-  return withFreshToken(await createDAVClient({
+  return withFreshToken(keepPartialReads(await createDAVClient({
     serverUrl: config.DAV_URL,
     ...getAuthConfig(config),
     defaultAccountType: 'caldav',
     fetch: davFetch(),
-  }), config);
+  })), config);
 }
 
 /**
@@ -132,12 +133,12 @@ export async function createCalDAVClient(config: Config): Promise<DAVClientType>
  * @returns Configured CardDAV client
  */
 export async function createCardDAVClient(config: Config): Promise<DAVClientType> {
-  return withFreshToken(await createDAVClient({
+  return withFreshToken(keepPartialReads(await createDAVClient({
     serverUrl: config.DAV_URL,
     ...getAuthConfig(config),
     defaultAccountType: 'carddav',
     fetch: davFetch(),
-  }), config);
+  })), config);
 }
 
 /**

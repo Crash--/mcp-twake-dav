@@ -20,7 +20,7 @@ import {
   computeBusyPeriods,
 } from './utils.js';
 import type { FreeBusyPeriod } from '../../types/dtos.js';
-import { DavHttpError } from '../../errors.js';
+import { isDavUnsupported } from '../../errors.js';
 
 /**
  * Format free/busy response for the user
@@ -204,11 +204,12 @@ export function registerCheckAvailabilityTool(
 
           // Parse VFREEBUSY response with ical.js
           const busyPeriods: FreeBusyPeriod[] = [];
+          let hasFreeBusyData = false;
 
-          // DAVResponse has raw and props fields
-          const icalData = response.props?.calendarData?._value
-            || response.props?.calendarData?.value
-            || response.raw
+          // DAVResponse has raw and props fields. An empty answer leaves no response at all.
+          const icalData = response?.props?.calendarData?._value
+            || response?.props?.calendarData?.value
+            || response?.raw
             || '';
 
           if (icalData && typeof icalData === 'string') {
@@ -217,6 +218,7 @@ export function registerCheckAvailabilityTool(
               const comp = new ICAL.Component(jcalData);
               const vfreebusy = comp.getFirstSubcomponent('vfreebusy');
               if (vfreebusy) {
+                hasFreeBusyData = true;
                 const fbProps = vfreebusy.getAllProperties('freebusy');
                 for (const prop of fbProps) {
                   const period = prop.getFirstValue() as { start?: ICAL.Time; end?: ICAL.Time } | null;
@@ -235,17 +237,16 @@ export function registerCheckAvailabilityTool(
             }
           }
 
-          if (busyPeriods.length > 0 || response.ok !== false) {
+          if (hasFreeBusyData) {
             logger.info({ periods: busyPeriods.length }, 'Server-side free-busy-query succeeded');
             return formatFreeBusyResponse(busyPeriods, startDate, endDate, userTimezone);
           }
 
-          throw new Error('No VFREEBUSY data in server response');
+          logger.info('No VFREEBUSY data in server response, using client-side fallback');
         } catch (serverErr) {
           // Only a server without free-busy support reaches the fallback: a failing
           // server must surface here, not be asked again for every event.
-          const unsupported = serverErr instanceof DavHttpError && [400, 403, 404, 405, 415, 501].includes(serverErr.status);
-          if (!unsupported && !(serverErr instanceof ICAL.parse.ParserError)) throw serverErr;
+          if (!isDavUnsupported(serverErr) && !(serverErr instanceof ICAL.parse.ParserError)) throw serverErr;
           logger.info({ err: serverErr }, 'Server-side free-busy-query unavailable, using client-side fallback');
         }
 

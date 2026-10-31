@@ -155,12 +155,48 @@ export class DavHttpError extends Error {
   readonly retryAfter: string | null;
 
   constructor(status: number, retryAfter: string | null = null, detail?: string) {
+    // At startup tsdav tries other root URLs after a failure, and only keeps a first
+    // error worded "Invalid credentials": otherwise a 401 ends up as what the next URL answers.
     super(
-      `The DAV server answered HTTP ${status}${detail ? ` (${detail})` : ''}, so this result is unknown, not empty.\n\n${davStatusAdvice(status)}`
+      `${status === 401 ? 'Invalid credentials: ' : ''}The DAV server answered HTTP ${status}${detail ? ` (${detail})` : ''}, so this result is unknown, not empty.\n\n${davStatusAdvice(status)}`
     );
     this.name = 'DavHttpError';
     this.status = status;
     this.retryAfter = retryAfter;
+  }
+}
+
+/** Statuses of a server that does not offer a request, as opposed to one failing on it. */
+const UNSUPPORTED_STATUSES = [400, 403, 404, 405, 415, 501];
+
+export function isDavUnsupported(err: unknown): boolean {
+  return err instanceof DavHttpError && UNSUPPORTED_STATUSES.includes(err.status);
+}
+
+/**
+ * A PUT or DELETE got no answer. The server may have applied it, so repeating
+ * it blindly can create a duplicate.
+ */
+export class DavWriteUnknownError extends Error {
+  constructor(cause: unknown) {
+    super(
+      'The DAV server did not confirm this change, so it may or may not have been applied.\n\nFix: Do not repeat it yet. First read the calendar or the address book to see whether it was applied.',
+      { cause }
+    );
+    this.name = 'DavWriteUnknownError';
+  }
+}
+
+/** fetch only says "fetch failed": the reason (ENOTFOUND, ECONNREFUSED, ...) is in its cause. */
+export class DavNetworkError extends Error {
+  constructor(cause: Error) {
+    const reason = cause.cause as { code?: string; message?: string } | undefined;
+    const detail = reason?.code ?? reason?.message;
+    super(
+      `The DAV server could not be reached${detail ? ` (${detail})` : ''}, so this result is unknown, not empty.\n\nFix: Check that the server is running and that DAV_URL is right.`,
+      { cause }
+    );
+    this.name = 'DavNetworkError';
   }
 }
 
