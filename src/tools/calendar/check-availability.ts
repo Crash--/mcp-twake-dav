@@ -21,6 +21,7 @@ import {
 } from './utils.js';
 import type { FreeBusyPeriod } from '../../types/dtos.js';
 import { isDavUnsupported } from '../../errors.js';
+import { hasPartialRead } from '../../caldav/dav-fetch.js';
 
 /**
  * Format free/busy response for the user
@@ -256,6 +257,16 @@ export function registerCheckAvailabilityTool(
         );
         const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
         const busyPeriods = computeBusyPeriods(events, logger);
+        // Anything not read could be what makes this time busy.
+        if (hasPartialRead()) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'Availability is unknown: some events could not be read, so this time cannot be called free.',
+            }],
+            isError: true,
+          };
+        }
         return formatFreeBusyResponse(busyPeriods, startDate, endDate, userTimezone);
       } catch (err) {
         logger.error({ err }, 'Error in check_availability');
