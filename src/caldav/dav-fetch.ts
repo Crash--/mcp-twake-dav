@@ -154,14 +154,16 @@ export const guardedFetch: typeof fetch = async (input, init) => {
     if (response.status >= 400 && !isReportSet) {
       throw new DavHttpError(response.status, response.headers.get('retry-after'));
     }
-    if (response.ok && !isReportSet) {
+    // Our JSON API requests ask for JSON, and hold no multi-status to read.
+    const asksJson = (init?.headers as Record<string, string> | undefined)?.accept === 'application/json';
+    if (response.ok && !isReportSet && !asksJson) {
       checkReadBody(method, url, requestBody, response.status, response.headers.get('content-type') ?? '', text);
     }
     const headers = new Headers(response.headers);
     headers.delete('content-length');
     headers.delete('content-encoding');
     // A Response refuses a body on some statuses, even an empty one.
-    const body = method === 'REPORT' && response.ok ? withoutFailedObjects(text) : text;
+    const body = method === 'REPORT' && response.ok && !asksJson ? withoutFailedObjects(text) : text;
     return new Response(body || null, { status: response.status, statusText: response.statusText, headers });
   } catch (err) {
     if (isWrite && (err as Error).name !== 'AbortError') throw new DavWriteUnknownError(err);
