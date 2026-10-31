@@ -2,7 +2,7 @@
  * Tool answers against the real tsdav and a local DAV server with two calendars.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import pino from 'pino';
@@ -162,5 +162,28 @@ describe('calendar answers', () => {
   it('get_next_event says how far it looked', async () => {
     dav.handler = (req) => (req.method === 'REPORT' ? calendarObjects([]) : null);
     expect((await call('get_next_event')).text).toBe('No upcoming events found in the next 365 days');
+  });
+});
+
+describe('a calendar created after startup', () => {
+  it('is seen within a minute', async () => {
+    const dav = await startFakeDav(['Perso']);
+    const config = { DAV_URL: dav.url, DAV_AUTH_METHOD: 'basic', DAV_USERNAME: 'u', DAV_PASSWORD: 'p' } as Config;
+    const clients = await createDualClients(config, logger);
+    const service = new CalendarService(clients.caldav, logger, config);
+    const names = async () => (await service.listCalendars()).map((c) => c.displayName);
+    expect(await names()).toEqual(['Perso']);
+
+    dav.handler = (req) => {
+      if (req.method !== 'PROPFIND' || req.url !== '/calendars/u1/') return null;
+      const xml = (name: string) => `<d:response><d:href>/calendars/u1/${name}/</d:href><d:propstat><d:prop><d:displayname>${name}</d:displayname><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set><cs:getctag>1</cs:getctag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`;
+      return { status: 207, headers: { 'content-type': 'application/xml' }, body: `<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/">${xml('Perso')}${xml('New')}</d:multistatus>` };
+    };
+    expect(await names()).toEqual(['Perso']);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 61_000);
+    expect(await names()).toEqual(['Perso', 'New']);
+    clock.mockRestore();
+    await dav.close();
   });
 });
