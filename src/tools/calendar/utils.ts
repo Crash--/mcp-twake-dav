@@ -310,10 +310,14 @@ export function getEventsWithRecurrenceExpansion(
           maxOccurrences: MAX_OCCURRENCES_PER_SERIES,
           maxDate: endDate,
           startDate: startDate,
+          lookbackMs: Math.max(duration - 1, 0),
         });
         if (occurrences.length >= MAX_OCCURRENCES_PER_SERIES) {
           addReadWarning(`The series ${eventDTO.uid} has more than ${MAX_OCCURRENCES_PER_SERIES} occurrences in this range, and the later ones are not shown. Ask for a shorter range.`);
         }
+        const occurrenceTimes = new Set(occurrences.map((date) => date.getTime()));
+        const overlaps = (start: Date, end: Date) =>
+          start < endDate && (end > startDate || start >= startDate);
 
         // Create EventDTO for each occurrence (preserving original fields, updating dates)
         for (const occurrenceDate of occurrences) {
@@ -341,9 +345,8 @@ export function getEventsWithRecurrenceExpansion(
 
             // For non-cancelled exceptions, use the exception's dates and summary
             const exceptionEvent = details.item;
-            // A moved occurrence belongs to the range of its new date.
-            const movedStart = details.startDate.toJSDate();
-            if (movedStart < startDate || movedStart >= endDate) continue;
+            // A moved occurrence belongs to the window of its new date.
+            if (!overlaps(details.startDate.toJSDate(), details.endDate.toJSDate())) continue;
             allEvents.push({
               ...eventDTO,
               summary: exceptionEvent.summary || eventDTO.summary,
@@ -365,6 +368,26 @@ export function getEventsWithRecurrenceExpansion(
             });
           }
         }
+
+        // An occurrence moved here from another window: the loop above never met its original date.
+        for (const exception of exceptions) {
+          const moved = new ICAL.Event(exception);
+          const status = exception.getFirstPropertyValue('status');
+          if (
+            !moved.recurrenceId
+            || occurrenceTimes.has(moved.recurrenceId.toJSDate().getTime())
+            || (status && String(status).toUpperCase() === 'CANCELLED')
+            || !overlaps(moved.startDate.toJSDate(), moved.endDate.toJSDate())
+          ) continue;
+          allEvents.push({
+            ...eventDTO,
+            summary: moved.summary || eventDTO.summary,
+            description: moved.description || eventDTO.description,
+            location: moved.location || eventDTO.location,
+            startDate: moved.startDate.toJSDate(),
+            endDate: moved.endDate.toJSDate(),
+          });
+        }
       } catch (err) {
         logger.error(
           { err, uid: eventDTO.uid },
@@ -374,8 +397,10 @@ export function getEventsWithRecurrenceExpansion(
         addReadWarning(`The recurring event ${eventDTO.uid} could not be expanded.`);
       }
     } else {
-      // Non-recurring event: include if startDate falls within time range
-      if (eventDTO.startDate >= startDate && eventDTO.startDate < endDate) {
+      // Non-recurring event: include if it overlaps the time range, as the server's time-range does
+      const overlapsRange = eventDTO.startDate < endDate
+        && (eventDTO.endDate > startDate || eventDTO.startDate >= startDate);
+      if (overlapsRange) {
         allEvents.push(eventDTO);
       }
     }
@@ -431,7 +456,8 @@ export function checkWindow(timeRange: TimeRange, cursor?: EventCursor): string 
   if (end - start > MAX_WINDOW_DAYS * 86_400_000 + 3_600_000) {
     return `The date range is longer than ${MAX_WINDOW_DAYS} days. Ask for ${MAX_WINDOW_DAYS} days at most, then for the following days in another call.`;
   }
-  if (cursor && (Date.parse(cursor.start) < start || Date.parse(cursor.start) >= end)) {
+  // No lower bound: an event already running at the start of the range sorts first, and can be the next one.
+  if (cursor && Date.parse(cursor.start) >= end) {
     return 'The cursor is outside the date range. Repeat the dates of the call that returned it. A call without dates follows the clock, so its range may have moved: start again without the cursor.';
   }
   return null;

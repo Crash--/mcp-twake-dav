@@ -28,6 +28,13 @@ export interface RecurrenceOptions {
    * @default undefined
    */
   startDate?: Date;
+
+  /**
+   * Also include occurrences that start this long before startDate, without
+   * counting them toward max: they may still be running at startDate.
+   * @default 0
+   */
+  lookbackMs?: number;
 }
 
 /**
@@ -53,6 +60,7 @@ export function expandRecurringEvent(
   const maxDate =
     options?.maxDate ?? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year from now
   const startDate = options?.startDate;
+  const lookbackMs = options?.lookbackMs ?? 0;
 
   // Get DTSTART property (required for recurrence expansion)
   const dtstart = vevent.getFirstPropertyValue('dtstart');
@@ -86,13 +94,13 @@ export function expandRecurringEvent(
     }
 
     // Filter: skip occurrences before startDate (but don't count toward max)
-    if (startDate && jsDate < startDate) {
+    if (startDate && jsDate.getTime() < startDate.getTime() - lookbackMs) {
       continue; // Skip but don't increment count
     }
 
     // Include this occurrence
     occurrences.push(jsDate);
-    count++;
+    if (!startDate || jsDate >= startDate) count++;
   }
 
   return occurrences;
