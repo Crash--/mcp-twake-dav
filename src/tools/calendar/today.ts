@@ -19,7 +19,6 @@ import {
   pageWindow,
   paginateEvents,
   formatPageFooter,
-  DEFAULT_EVENT_LIMIT,
 } from './utils.js';
 
 /**
@@ -77,11 +76,9 @@ export function registerTodaysScheduleTool(
         );
 
         // Transform and expand recurring events
-        const limit = params.limit ?? DEFAULT_EVENT_LIMIT;
-        const expanded = getEventsWithRecurrenceExpansion(
-          rawEvents, queryWindow, logger, (params.cursor?.skip ?? 0) + limit + 1
-        );
-        const { page: events, nextCursor } = paginateEvents(expanded, limit, params.cursor);
+        // Over the whole range: an occurrence moved after the cursor comes from before it.
+        const expanded = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const { page: events, nextCursor } = paginateEvents(expanded, params.limit, params.cursor);
 
         if (events.length === 0) {
           logger.info('No events scheduled for today');

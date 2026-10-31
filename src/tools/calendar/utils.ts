@@ -18,6 +18,7 @@ import type { Logger } from 'pino';
 import type { DAVCalendarObject } from 'tsdav';
 import type { CalendarService, TimeRange } from '../../caldav/calendar-service.js';
 import type { EventDTO, FreeBusyPeriod } from '../../types/dtos.js';
+import { addReadWarning } from '../../caldav/dav-fetch.js';
 import { transformCalendarObject } from '../../transformers/event.js';
 import { expandRecurringEvent } from '../../transformers/recurrence.js';
 
@@ -124,6 +125,13 @@ export function formatEventTime(event: EventDTO, userTimezone?: string): string 
   return `${startStr} - ${endTime}${timezoneStr}`;
 }
 
+// limit counts events: without this, 100 events of 200 attendees are 925 000 characters.
+const MAX_ATTENDEES_SHOWN = 10;
+
+function omittedAttendees(total: number): string {
+  return total > MAX_ATTENDEES_SHOWN ? `, and ${total - MAX_ATTENDEES_SHOWN} more not shown (${total} in total)` : '';
+}
+
 /**
  * Format event as concise multi-line text for LLM consumption
  *
@@ -168,6 +176,7 @@ export function formatEvent(event: EventDTO, userTimezone?: string): string {
   // Line 5: Attendees with participation status (if present, indented)
   if (event.attendeeDetails && event.attendeeDetails.length > 0) {
     const attendeesList = event.attendeeDetails
+      .slice(0, MAX_ATTENDEES_SHOWN)
       .map((a) => {
         // Format partstat for display (e.g., NEEDS-ACTION -> needs-action)
         const status = a.partstat.toLowerCase().replace(/-/g, '-');
@@ -175,10 +184,10 @@ export function formatEvent(event: EventDTO, userTimezone?: string): string {
         return `${a.name} <${a.email}> (${status})`;
       })
       .join(', ');
-    lines.push(`  Attendees: ${attendeesList}`);
+    lines.push(`  Attendees: ${attendeesList}${omittedAttendees(event.attendeeDetails.length)}`);
   } else if (event.attendees.length > 0) {
     // Fallback to simple attendee list if no details available
-    lines.push(`  Attendees: ${event.attendees.join(', ')}`);
+    lines.push(`  Attendees: ${event.attendees.slice(0, MAX_ATTENDEES_SHOWN).join(', ')}${omittedAttendees(event.attendees.length)}`);
   }
 
   return lines.join('\n');
@@ -242,8 +251,6 @@ export function getEventsWithRecurrenceExpansion(
   rawEvents: DAVCalendarObject[],
   timeRange: TimeRange,
   logger: Logger,
-  // shortcut: a series above this in one window is cut, raise it if a calendar ever needs it
-  maxPerSeries = 10_000,
 ): EventDTO[] {
   const startDate = new Date(timeRange.start);
   const endDate = new Date(timeRange.end);
@@ -254,6 +261,7 @@ export function getEventsWithRecurrenceExpansion(
     const eventDTO = transformCalendarObject(rawEvent, logger);
     if (!eventDTO) {
       // Transformation failed (logged by transformer)
+      addReadWarning(`The event ${rawEvent.url.split('/').pop()} could not be read.`);
       continue;
     }
 
@@ -291,10 +299,13 @@ export function getEventsWithRecurrenceExpansion(
 
         // Expand recurring event with time range boundaries
         const occurrences = expandRecurringEvent(vevent, {
-          maxOccurrences: maxPerSeries,
+          maxOccurrences: MAX_OCCURRENCES_PER_SERIES,
           maxDate: endDate,
           startDate: startDate,
         });
+        if (occurrences.length >= MAX_OCCURRENCES_PER_SERIES) {
+          addReadWarning(`The series ${eventDTO.uid} has more than ${MAX_OCCURRENCES_PER_SERIES} occurrences in this range, and the later ones are not shown. Ask for a shorter range.`);
+        }
 
         // Create EventDTO for each occurrence (preserving original fields, updating dates)
         for (const occurrenceDate of occurrences) {
@@ -322,6 +333,9 @@ export function getEventsWithRecurrenceExpansion(
 
             // For non-cancelled exceptions, use the exception's dates and summary
             const exceptionEvent = details.item;
+            // A moved occurrence belongs to the range of its new date.
+            const movedStart = details.startDate.toJSDate();
+            if (movedStart < startDate || movedStart >= endDate) continue;
             allEvents.push({
               ...eventDTO,
               summary: exceptionEvent.summary || eventDTO.summary,
@@ -348,7 +362,8 @@ export function getEventsWithRecurrenceExpansion(
           { err, uid: eventDTO.uid },
           'Failed to expand recurring event'
         );
-        // Skip this recurring event if expansion fails
+        // Skip this recurring event if expansion fails, and say so
+        addReadWarning(`The recurring event ${eventDTO.uid} could not be expanded.`);
       }
     } else {
       // Non-recurring event: include if startDate falls within time range
@@ -371,6 +386,9 @@ export const DEFAULT_EVENT_LIMIT = 50;
 export const MAX_EVENT_LIMIT = 100;
 export const DEFAULT_WINDOW_DAYS = 7;
 export const MAX_WINDOW_DAYS = 92;
+const MAX_CURSOR_SKIP = 10_000;
+// shortcut: a series above this in one range is cut with a warning, raise it if a real calendar needs it
+const MAX_OCCURRENCES_PER_SERIES = 10_000;
 
 /** Where the next page starts: the start of its first event, and how many events at that exact start were already returned. */
 export interface EventCursor {
@@ -384,8 +402,10 @@ export const paginationParams = {
   ),
   cursor: z.object({
     start: z.string().datetime({ offset: true }),
-    skip: z.number().int().min(0),
-  }).optional().describe('The nextCursor of the previous response. Repeat the same dates and filters with it.'),
+    skip: z.number().int().min(0).max(MAX_CURSOR_SKIP),
+  }).optional().describe('The value of nextCursor in the previous response. Repeat the same dates and filters with it.'),
+  // A model may repeat the name it read in the response: the schema would drop it and page 1 would come back.
+  nextCursor: z.never({ error: 'Pass the value of nextCursor as the cursor parameter.' }).optional().describe('Not a parameter: pass the value of nextCursor as cursor.'),
 };
 
 /**
@@ -403,7 +423,7 @@ export function checkWindow(timeRange: TimeRange, cursor?: EventCursor): string 
     return `The date range is longer than ${MAX_WINDOW_DAYS} days. Ask for ${MAX_WINDOW_DAYS} days at most, then for the following days in another call.`;
   }
   if (cursor && (Date.parse(cursor.start) < start || Date.parse(cursor.start) >= end)) {
-    return 'The cursor is outside the date range. Repeat the dates of the call that returned it.';
+    return 'The cursor is outside the date range. Repeat the dates of the call that returned it. A call without dates follows the clock, so its range may have moved: start again without the cursor.';
   }
   return null;
 }
@@ -426,6 +446,9 @@ export function paginateEvents(
 ): { page: EventDTO[]; nextCursor: EventCursor | null } {
   const from = cursor ? Date.parse(cursor.start) : -Infinity;
   const skip = cursor?.skip ?? 0;
+  if (skip > events.filter((event) => event.startDate.getTime() === from).length) {
+    addReadWarning('The cursor skips more events than start at its date: the calendar changed since the previous page, so some events may be missing. Start again without the cursor to be sure.');
+  }
   const remaining = events
     .filter((event) => event.startDate.getTime() >= from)
     .filter((event, index) => !(index < skip && event.startDate.getTime() === from));
@@ -448,7 +471,7 @@ export function paginateEvents(
 /** The last lines of a page: the model must never read a page as the whole result. */
 export function formatPageFooter(nextCursor: EventCursor | null): string {
   return nextCursor
-    ? `\n\nMore events remain. To continue, call again with the same dates and:\nnextCursor: ${JSON.stringify(nextCursor)}`
+    ? `\n\nMore events remain. To continue, call again with the same dates and pass this value as cursor:\nnextCursor: ${JSON.stringify(nextCursor)}`
     : '\n\nNo more events in this range.';
 }
 

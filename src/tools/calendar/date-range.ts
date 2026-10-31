@@ -18,7 +18,6 @@ import {
   pageWindow,
   paginateEvents,
   formatPageFooter,
-  DEFAULT_EVENT_LIMIT,
   DEFAULT_WINDOW_DAYS,
   MAX_WINDOW_DAYS,
 } from './utils.js';
@@ -89,11 +88,9 @@ export function registerDateRangeTool(
         );
 
         // Transform and expand recurring events
-        const limit = params.limit ?? DEFAULT_EVENT_LIMIT;
-        const expanded = getEventsWithRecurrenceExpansion(
-          rawEvents, queryWindow, logger, (params.cursor?.skip ?? 0) + limit + 1
-        );
-        const { page: events, nextCursor } = paginateEvents(expanded, limit, params.cursor);
+        // Over the whole range: an occurrence moved after the cursor comes from before it.
+        const expanded = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const { page: events, nextCursor } = paginateEvents(expanded, params.limit, params.cursor);
 
         if (events.length === 0) {
           logger.info({ when: label }, 'No events found for date range');

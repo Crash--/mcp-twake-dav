@@ -9,6 +9,7 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 - `get_events_in_range`, `get_todays_schedule` and `search_events` take `limit` (default 50, maximum 100) and `cursor`, and return `nextCursor` while events remain, instead of cutting at 50 without saying so.
 - A date range covers 92 days at most, including in `check_availability`. `when` is optional in `get_events_in_range`: without it, the next 7 days.
 - A time-range read is one `calendar-query`, without a multiget. A window the server still refuses with 413 is split, down to one day.
+- An event shows its first 10 attendees and how many more it has.
 
 ### Fixed
 - A failing DAV read (401, 413, 429, 500, multiget included, or an error inside a 207) or an unknown calendar or address book name is an error for the assistant, with its status and what to do. Objects that could not be read are named next to the result, and so is a calendar this account has no access to: the other calendars still answer, and `check_availability` then says availability is unknown.

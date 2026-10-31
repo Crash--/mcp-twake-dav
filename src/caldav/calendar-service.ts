@@ -245,11 +245,13 @@ export class CalendarService {
         this.logger
       );
       return responses.flatMap((res) => {
-        if (!res.ok) throw new DavHttpError(res.status);
+        if (!res.href) return [];
         const data = res.props?.calendarData?._cdata ?? res.props?.calendarData;
-        return res.href && data
-          ? [{ url: new URL(res.href, calendar.url).href, etag: res.props?.getetag, data }]
-          : [];
+        if (!res.ok || !data) {
+          addReadWarning(`The server returned no data for the object ${res.href.split('/').pop()}.`);
+          return [];
+        }
+        return [{ url: new URL(res.href, calendar.url).href, etag: res.props?.getetag, data }];
       });
     } catch (err) {
       const start = Date.parse(timeRange.start);
