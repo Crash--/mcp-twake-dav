@@ -1,46 +1,36 @@
 ---
-name: Bug Report
-about: Report a bug to help us improve mcp-twake-dav
-title: ''
+name: Bug report
+about: Report a problem with mcp-twake-dav
+title: "[Bug] "
 labels: bug
-assignees: ''
 ---
 
-## Describe the bug
+<!-- Security vulnerability? Do not open a public issue: see SECURITY.md. -->
 
-A clear and concise description of what the bug is.
+## Description
+
+What happened, and what did you expect?
 
 ## Steps to reproduce
 
-1. Configure mcp-twake-dav with '...'
-2. Ask Claude '...'
-3. See error
-
-## Expected behavior
-
-What you expected to happen.
-
-## Actual behavior
-
-What actually happened. Include error messages if any.
-
-## Environment
-
-- **Node.js version:** (e.g., 22.x)
-- **OS:** (e.g., macOS 15, Ubuntu 24.04)
-- **CalDAV/CardDAV server:** (e.g., Nextcloud 30, Twake)
-- **MCP client:** (e.g., Claude Desktop, Claude CLI)
-- **mcp-twake-dav version:** (e.g., 0.2.0)
-- **Auth method:** (basic / bearer)
+1.
+2.
+3.
 
 ## Logs
 
-If applicable, set `LOG_LEVEL=debug` and include relevant log output (redact any credentials).
+Run with `LOG_LEVEL=debug` and paste the relevant stderr lines. **Remove any token, password, email address or hostname you do not want to make public.**
 
 ```
-Paste logs here
 ```
 
-## Additional context
+## Environment
 
-Any other context about the problem.
+<!-- Node.js version, OS, MCP client, CalDAV/CardDAV server (e.g. Twake Calendar, Nextcloud, SOGo), authentication method -->
+
+- mcp-twake-dav version:
+- Node.js version:
+- OS:
+- MCP client (Claude Desktop, Claude Code, Hermes Agent, …):
+- Server:
+- Authentication method:

@@ -1,23 +1,20 @@
 ---
-name: Feature Request
-about: Suggest a new feature or improvement for mcp-twake-dav
-title: ''
+name: Feature request
+about: Suggest a new tool or an improvement for mcp-twake-dav
+title: "[Feature] "
 labels: enhancement
-assignees: ''
 ---
 
-## Problem or use case
+## Use case
 
-A clear description of the problem you're trying to solve or the use case you'd like to support.
+What do you want your AI assistant to do with Twake Calendar and contacts? Describe the situation, not only the solution.
 
 ## Proposed solution
 
-Describe the solution you'd like. Be as specific as possible.
+New tool, new parameter, new configuration option…
+
+## Safety
+
+Does it write, send, share or delete data? How should the user keep control (confirmation, opt-in setting, tool filtering)?
 
 ## Alternatives considered
-
-Any alternative solutions or workarounds you've considered.
-
-## Additional context
-
-Any other context, examples, or screenshots about the feature request.

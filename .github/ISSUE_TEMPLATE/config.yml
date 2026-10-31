@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/linagora/mcp-twake-dav/security/advisories/new
+    about: Please report vulnerabilities privately, never in a public issue.
+  - name: Twake.ai
+    url: https://twake.ai
+    about: Discover the Twake.ai Digital Workplace.
+  - name: Commercial support (LINAGORA)
+    url: https://linagora.com
+    about: Support, hosting and integration services by LINAGORA.

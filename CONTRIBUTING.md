@@ -1,152 +1,70 @@
 # Contributing to mcp-twake-dav
 
-Thank you for your interest in contributing to mcp-twake-dav! This document provides guidelines and instructions for contributing.
+Thank you for your interest in mcp-twake-dav! This project is part of the open source ecosystem of [Twake.ai](https://twake.ai), the sovereign Digital Workplace developed by [LINAGORA](https://linagora.com). Contributions of every kind are welcome: bug reports, documentation, tests, compatibility reports with other servers, and code.
 
-## Getting Started
+By participating, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-1. Fork the repository on GitHub
-2. Clone your fork locally:
-   ```bash
-   git clone https://github.com/<your-username>/mcp-twake-dav.git
-   cd mcp-twake-dav
-   ```
-3. Install dependencies:
-   ```bash
-   npm install
-   ```
-4. Build the project:
-   ```bash
-   npm run build
-   ```
-5. Run tests to verify your setup:
-   ```bash
-   npm test
-   ```
+## Ways to contribute
 
-## Development Workflow
+- **Report a bug**: open an issue with the *Bug report* template.
+- **Suggest a feature or a new tool**: open an issue with the *Feature request* template, and describe the use case before the solution.
+- **Report a vulnerability**: never in a public issue; follow [SECURITY.md](SECURITY.md).
+- **Improve the documentation**: typos, examples, MCP client configurations, translations.
+- **Send a pull request**: for anything bigger than a small fix, open an issue first so we can agree on the approach.
 
-### Branch naming
+## Development setup
 
-Use descriptive branch names:
-- `feat/calendar-filtering` for new features
-- `fix/auth-timeout` for bug fixes
-- `docs/readme-update` for documentation changes
-- `refactor/service-layer` for refactoring
-- `test/recurrence-expansion` for test additions
+Requirements: Node.js >= 20 and npm.
 
-### Making changes
-
-1. Create a feature branch from `master`:
-   ```bash
-   git checkout -b feat/your-feature
-   ```
-2. Make your changes following the code style guidelines below
-3. Run the build to check for TypeScript errors:
-   ```bash
-   npm run build
-   ```
-4. Run tests:
-   ```bash
-   npm test
-   ```
-5. Commit your changes with a clear message (see commit conventions below)
-6. Push to your fork and open a Pull Request
-
-### Watch mode
-
-For rapid iteration during development:
 ```bash
-npm run dev
+git clone https://github.com/linagora/mcp-twake-dav.git
+cd mcp-twake-dav
+npm install
+npm run build   # compile TypeScript to build/
+npm test        # run the test suite (Vitest)
 ```
-This runs the TypeScript compiler in watch mode, recompiling on file changes.
 
-## Code Style Guidelines
-
-### TypeScript
-
-- **Strict mode** is enabled -- all code must pass strict type checking
-- Use **ESM imports** with `.js` extensions (required by the MCP SDK):
-  ```typescript
-  import { CalendarService } from './caldav/calendar-service.js';
-  ```
-- Use `type` imports when importing only types:
-  ```typescript
-  import type { Logger } from 'pino';
-  ```
-- Prefer `interface` over `type` for object shapes
-- Use explicit return types on exported functions
+Tests never touch a real server: they use mocks and fixtures. Do not add tests that need real credentials.
 
 ### Project structure
 
 ```
 src/
-  caldav/          # CalDAV/CardDAV client, services, caching, retry
-  config/          # Environment validation (Zod), logger setup
-  tools/           # MCP tool implementations
-    calendar/      # Calendar query tools + utilities
-    contacts/      # Contact query tools + utilities
-  transformers/    # iCalendar/vCard parsing and transformation
-  types/           # Shared TypeScript types and DTOs
-tests/
-  integration/     # MCP protocol integration tests
+  caldav/          # tsdav clients, auth (basic, bearer, esntoken, command), href prefix, services
+  cli/             # setup wizard
+  config/          # environment validation (Zod), logger
+  tools/           # MCP tool implementations (calendar, contacts)
+  transformers/    # iCalendar / vCard parsing and serialisation
+  types/           # shared TypeScript types
+tests/             # unit and integration tests (Vitest)
+scripts/           # end-to-end checks against mock servers
 ```
 
-### Conventions
+## Coding guidelines
 
-- All logs go to **stderr** (stdout is reserved for MCP JSON-RPC protocol)
-- Services return raw DAV objects; transformation to DTOs happens in the tools layer
-- CTag-based caching is handled at the service level
-- Tools use Zod schemas for parameter validation
+- TypeScript in **strict mode**, ESM modules with `.js` import extensions (required by the MCP SDK).
+- **stdout is reserved for the MCP JSON-RPC protocol**: all logs go to stderr through the logger.
+- Validate tool inputs with Zod schemas, and give every tool accurate MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`).
+- Error messages say what went wrong **and** how to fix it: they are read by an AI assistant and by its user.
+- Never log or return secrets (passwords, tokens, refresh tokens). Never commit real hostnames, accounts or personal data in tests or docs: use `example.com`.
+- A new tool or environment variable must come with tests and an update of the README.
 
-## Commit Conventions
+## Commits and pull requests
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
+- Branch from `master`: `feat/…`, `fix/…`, `docs/…`, `refactor/…`, `test/…`, `chore/…`.
+- Follow [Conventional Commits](https://www.conventionalcommits.org/): `feat: add attendee support to create_event`.
+- Keep pull requests focused on one concern, describe what changes and why, and link the related issue.
+- Before opening the pull request: `npm run build` and `npm test` must pass (CI runs both).
+- Add a line to [CHANGELOG.md](CHANGELOG.md) under *Unreleased* for any user-visible change.
 
+## Developer Certificate of Origin
+
+All contributions are made under the [Developer Certificate of Origin](https://developercertificate.org/). Sign off your commits to certify that you wrote the change or have the right to submit it:
+
+```bash
+git commit -s -m "fix: handle expired tokens"
 ```
-<type>: <short description>
-
-[optional body]
-```
-
-Types:
-- `feat:` -- new feature
-- `fix:` -- bug fix
-- `docs:` -- documentation changes
-- `test:` -- adding or updating tests
-- `refactor:` -- code refactoring (no functional change)
-- `chore:` -- build, CI, dependency updates
-
-Examples:
-```
-feat: add calendar filtering by name
-fix: handle empty displayName in address book lookup
-docs: update README with npx installation
-test: add integration test for search_events calendar param
-```
-
-## Pull Request Guidelines
-
-- Keep PRs focused on a single concern
-- Include a clear description of what changes and why
-- Ensure all tests pass (`npm test`)
-- Ensure the build succeeds (`npm run build`)
-- Update documentation if your change affects the public API or configuration
-- Link related issues in the PR description
-
-## Reporting Bugs
-
-Use the [Bug Report](https://github.com/mmaudet/mcp-twake-dav/issues/new?template=bug_report.md) issue template. Include:
-- Steps to reproduce
-- Expected vs actual behavior
-- Environment details (Node.js version, OS, CalDAV server)
-
-## Requesting Features
-
-Use the [Feature Request](https://github.com/mmaudet/mcp-twake-dav/issues/new?template=feature_request.md) issue template. Describe:
-- The use case or problem
-- Your proposed solution
-- Any alternatives you considered
 
 ## License
 
-By contributing to mcp-twake-dav, you agree that your contributions will be licensed under the [AGPL-3.0 license](LICENSE). All modifications must be shared under the same terms.
+mcp-twake-dav is licensed under the [GNU Affero General Public License v3.0](LICENSE). By contributing, you agree that your contributions are licensed under the same terms.

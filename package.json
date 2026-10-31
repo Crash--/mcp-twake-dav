@@ -1,15 +1,19 @@
 {
   "name": "mcp-twake-dav",
-  "version": "0.2.4",
-  "description": "MCP server for Twake.ai: integrate your sovereign Digital Workplace with any MCP-compatible AI assistant",
-  "license": "AGPL-3.0",
+  "version": "3.1.0",
+  "description": "MCP server for Twake.ai Calendar and contacts: give any MCP-compatible AI assistant secure access to your sovereign CalDAV calendars and CardDAV address books",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "build/index.js",
   "bin": {
     "mcp-twake-dav": "build/index.js"
   },
   "files": [
-    "build/"
+    "build/",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc",
@@ -20,22 +24,30 @@
     "prepublishOnly": "npm run build && npm test"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
+    "mcp-server",
     "caldav",
     "carddav",
     "calendar",
-    "contacts"
+    "contacts",
+    "twake",
+    "twake.ai",
+    "linagora",
+    "ai",
+    "sovereign",
+    "open-source"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mmaudet/mcp-twake-dav.git"
+    "url": "git+https://github.com/linagora/mcp-twake-dav.git"
   },
-  "homepage": "https://github.com/mmaudet/mcp-twake-dav#readme",
+  "homepage": "https://github.com/linagora/mcp-twake-dav#readme",
   "bugs": {
-    "url": "https://github.com/mmaudet/mcp-twake-dav/issues"
+    "url": "https://github.com/linagora/mcp-twake-dav/issues"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.3",
@@ -49,5 +61,6 @@
     "@types/node": "^25.0.10",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
-  }
+  },
+  "author": "LINAGORA <https://linagora.com>"
 }

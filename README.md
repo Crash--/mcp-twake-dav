@@ -1,421 +1,263 @@
 # mcp-twake-dav
 
 [![npm version](https://img.shields.io/npm/v/mcp-twake-dav)](https://www.npmjs.com/package/mcp-twake-dav)
+[![CI](https://github.com/linagora/mcp-twake-dav/actions/workflows/ci.yml/badge.svg)](https://github.com/linagora/mcp-twake-dav/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
+[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
 
-**MCP server for [Twake.ai](https://www.twake.ai/) — integrate your sovereign Digital Workplace with any MCP-compatible AI assistant**
+**Give your AI assistant secure access to Twake Calendar and your contacts, in the [Twake.ai](https://twake.ai) Digital Workplace.**
 
 ![Twake Calendar](assets/twake-calendar-screenshot.png)
 
-## Overview
+## What is it?
 
-mcp-twake-dav is a Model Context Protocol (MCP) server that connects any MCP-compatible AI assistant (Claude Desktop, Claude CLI, etc.) to your CalDAV calendars and CardDAV contacts. Compatible with SabreDAV-based servers including Twake, Nextcloud, and other CalDAV/CardDAV implementations.
+`mcp-twake-dav` is a [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server. MCP is the open standard that lets AI assistants (Claude Desktop, Claude Code, Hermes Agent, Cursor, VS Code and many others) use external tools. This server exposes your **calendars** and **address books** to the assistant as **20 tools**: agenda, availability, events, reminders, invitations and contacts.
 
-**Key benefits:**
-- Your data stays on your own servers — sovereign infrastructure
-- Works with any MCP-compatible AI assistant
-- Full control over calendar and contact data — read and write
-- Installable via npm — no local build required
-- Secure HTTPS-only connections (except localhost for development)
+It speaks the open standards **CalDAV** ([RFC 4791](https://www.rfc-editor.org/rfc/rfc4791)), **CardDAV** ([RFC 6352](https://www.rfc-editor.org/rfc/rfc6352)) and CalDAV scheduling ([RFC 6638](https://www.rfc-editor.org/rfc/rfc6638)). It is built for Twake Calendar and works with other SabreDAV-compatible servers (Nextcloud, SOGo, DAViCal, ownCloud…).
+
+## Part of Twake.ai
+
+[Twake.ai](https://twake.ai) is the truly open source and sovereign Digital Workplace developed by [LINAGORA](https://linagora.com): Twake Mail, Twake Calendar, Twake Drive, Twake Chat and Twake Visio with a single account, hosted in France or on your own infrastructure.
+
+Three open source MCP servers connect AI assistants to the whole workplace:
+
+| MCP server | Twake.ai service | Protocol |
+|---|---|---|
+| [mcp-twake-mail](https://github.com/linagora/mcp-twake-mail) | Twake Mail | JMAP |
+| **mcp-twake-dav** (this project) | Twake Calendar and contacts | CalDAV / CardDAV |
+| [mcp-twake-drive](https://github.com/linagora/mcp-twake-drive) | Twake Drive | cozy-stack API |
+
+Used together, they let one assistant prepare a meeting from the invitation, the related email thread and the documents in the drive, without your data leaving your servers.
+
+## What it brings
+
+- **Your day at a glance**: "What's on my agenda today? Where is my 3 pm meeting?"
+- **Finding a slot**: "When am I free for one hour with Marie next week?"
+- **Scheduling in natural language**: "Book a project review on Tuesday at 10 with Pierre and Marie" (dates like "next Monday" or "in two weeks" are understood).
+- **Reminders and invitations**: add or remove reminders, list pending invitations and answer them.
+- **Contacts**: find an email address or a phone number, create and update contact cards.
+- **Sovereignty**: the server runs next to your assistant and talks directly to your calendar server. Pair it with a self-hosted or European AI model to keep the whole chain under your control.
 
 ## Features
 
-**Calendar Read Tools:**
-- `get_next_event` - Find your next upcoming meeting
-- `get_todays_schedule` - View all events scheduled for today
-- `get_events_in_range` - Get events for a date range (natural language: "this week", "next month", etc.)
-- `search_events` - Search events by keyword or attendee name
-- `list_calendars` - List all available calendars
-- `check_availability` - Check free/busy availability for a time range
+### 20 MCP tools
 
-**Calendar Write Tools:**
-- `create_event` - Create a new calendar event (with optional recurrence)
-- `update_event` - Update an existing event (partial updates, single occurrence editing)
-- `delete_event` - Delete an event by UID (or single occurrence of recurring event)
-- `add_alarm` - Add a reminder to an event (natural language: "15 minutes", "1 hour", "1 day")
-- `remove_alarm` - Remove a reminder from an event
+| Category | Tools |
+|---|---|
+| Calendar, read | `get_next_event`, `get_todays_schedule`, `get_events_in_range`, `search_events`, `check_availability`, `list_calendars` |
+| Calendar, write | `create_event` (with attendees and recurrence), `update_event`, `delete_event` ⚠️, `add_alarm`, `remove_alarm` |
+| Invitations | `list_invitations`, `respond_to_invitation` ⚠️ |
+| Contacts, read | `search_contacts`, `get_contact_details`, `list_contacts`, `list_addressbooks` |
+| Contacts, write | `create_contact`, `update_contact`, `delete_contact` ⚠️ |
 
-**Invitation Management:**
-- `list_invitations` - List pending calendar invitations awaiting your response
-- `respond_to_invitation` - Accept, decline, or tentatively accept an invitation
+⚠️ = deletes data or makes the server notify other people. Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) so clients can ask for confirmation.
 
-**Contact Read Tools:**
-- `search_contacts` - Search contacts by name or organization
-- `get_contact_details` - Get full details for a specific contact
-- `list_contacts` - List all contacts (up to 30)
-- `list_addressbooks` - List all available address books
+### Highlights
 
-**Contact Write Tools:**
-- `create_contact` - Create a new contact
-- `update_contact` - Update an existing contact (partial updates supported)
-- `delete_contact` - Delete a contact by UID
+- **Attendees and organizer**: `create_event` invites attendees, with the organizer taken from `DAV_ORGANIZER_EMAIL` / `DAV_ORGANIZER_NAME`; the server sends the invitations.
+- **Recurring events**: RRULE expansion with safety limits, single-occurrence edits and deletions, and an opt-out (`DAV_RECURRING_WRITES=false`) for cautious deployments.
+- **Reliable updates**: events are found by UID with a server-side query; updates use parse-modify-serialize, so alarms, attendees and `X-` properties are preserved.
+- **Status display**: cancelled and tentative events, attendee participation status.
+- **Five authentication methods**: Basic, Bearer, OpenPaaS ESNToken, **token command** (short-lived tokens refreshed before every call) and an external credentials file.
+- **Reverse proxy support**: `DAV_HREF_PREFIX` for servers published under a path prefix that their responses omit (Twake Calendar / OpenPaaS).
+- CTag-based caching, retries with backoff, natural-language dates ([chrono-node](https://github.com/wanasit/chrono)), HTTPS enforced.
 
-**Advanced Features:**
-- Event status display (CANCELLED, TENTATIVE events clearly marked)
-- Attendee participation status (ACCEPTED, DECLINED, TENTATIVE, NEEDS-ACTION)
-- Recurring event expansion (RRULE support with safety limits)
-- Single occurrence editing (modify or delete individual occurrences of recurring events)
-- VALARM reminder management (add/remove alarms with natural language triggers)
-- RFC 6638 scheduling inbox support (list and respond to invitations)
-- Multi-calendar and multi-addressbook search
-- CTag-based caching for improved performance
-- Natural language date parsing (powered by chrono-node)
-- AI-friendly error messages for troubleshooting
-- Case-insensitive search across events and contacts
-- Parse-modify-serialize updates (preserves VALARM, X-properties, ATTENDEE, etc.)
-- MCP tool annotations (readOnlyHint, destructiveHint, openWorldHint)
+## Requirements
 
-## Prerequisites
-
-- **Node.js** >= 18.0.0
-- **CalDAV/CardDAV Server** - A SabreDAV-compatible server such as:
-  - Twake
-  - Nextcloud
-  - OwnCloud
-  - SOGo
-  - DAVical
-  - iCloud (limited support)
-- **HTTPS Required** - Your CalDAV/CardDAV server must use HTTPS (except localhost for development)
-- **MCP-compatible AI assistant** - Claude Desktop, Claude CLI, or any MCP client
+- **Node.js** >= 20
+- A **CalDAV / CardDAV server**: Twake Calendar, Nextcloud, SOGo, DAViCal, ownCloud… (HTTPS required, except `localhost`)
+- An **MCP client**: Claude Desktop, Claude Code, Hermes Agent, Cursor, VS Code, or any MCP-compatible assistant
 
 ## Installation
 
-**Via npx (recommended — no install needed):**
-```bash
-npx mcp-twake-dav
-```
-
-**Global install:**
-```bash
-npm install -g mcp-twake-dav
-mcp-twake-dav
-```
-
-**From source (development):**
-```bash
-git clone https://github.com/mmaudet/mcp-twake-dav.git
-cd mcp-twake-dav
-npm install
-npm run build
-```
-
-## Quick Setup (Recommended)
-
-The easiest way to configure mcp-twake-dav is to use the interactive setup wizard:
+**Interactive setup (recommended):**
 
 ```bash
 npx mcp-twake-dav setup
 ```
 
-The wizard will:
-1. Ask for your CalDAV/CardDAV server URL
-2. Ask for your authentication method and credentials
-3. Test the connection and discover your calendars and address books
-4. Let you choose default calendar and address book
-5. Generate and optionally write the configuration to your Claude Desktop config file
+The wizard asks for your server URL and credentials, tests the connection, lists your calendars and address books, lets you pick the defaults, and can write the Claude Desktop configuration for you.
 
-Example session:
+**Global install:**
+
+```bash
+npm install -g mcp-twake-dav
 ```
-  mcp-twake-dav Setup Wizard
-  ───────────────────────────
-  This wizard will configure mcp-twake-dav for your agent.
 
-CalDAV/CardDAV server URL (e.g., https://dav.example.com): https://dav.linagora.com
+**From source:**
 
-Authentication method:
-  1. Basic (username/password)
-  2. Bearer token (JWT)
-Choose [1-2]: 1
-Username: user@example.com
-Password:
-
-Testing connection...
-
-  Connected successfully!
-  Found 4 calendar(s) and 2 address book(s).
-
-Select default calendar:
-  1. My Calendar
-  2. Shared Calendar
-  3. (All)
-Choose [1-3]: 1
-
---- MCP Server Configuration ---
-
-{
-  "mcpServers": {
-    "mcp-twake-dav": {
-      "command": "npx",
-      "args": ["-y", "mcp-twake-dav"],
-      "env": {
-        "DAV_URL": "https://dav.linagora.com",
-        "DAV_USERNAME": "user@example.com",
-        "DAV_PASSWORD": "********",
-        "DAV_DEFAULT_CALENDAR": "My Calendar"
-      }
-    }
-  }
-}
-
-Write configuration to config file? [Y/n]: y
-
-  Added "mcp-twake-dav" in claude_desktop_config.json
-
-Setup complete! Restart your agent to apply changes.
+```bash
+git clone https://github.com/linagora/mcp-twake-dav.git
+cd mcp-twake-dav
+npm install
+npm run build          # then run: node build/index.js
 ```
 
 ## Configuration
 
-### Environment Variables
+The server is configured through environment variables, usually set in your MCP client configuration.
 
-#### Basic Auth (default)
+### Authentication
 
-Standard username/password authentication. `DAV_AUTH_METHOD` can be omitted (defaults to `basic`).
+| Method | Variables |
+|---|---|
+| **Basic** (default) | `DAV_URL`, `DAV_USERNAME`, `DAV_PASSWORD` |
+| **Bearer** | `DAV_URL`, `DAV_AUTH_METHOD=bearer`, `DAV_TOKEN` |
+| **ESNToken** (OpenPaaS) | `DAV_URL`, `DAV_AUTH_METHOD=esntoken`, `DAV_TOKEN` |
+| **Token command** | `DAV_URL`, `DAV_AUTH_METHOD=command`, `DAV_TOKEN_COMMAND` |
 
-| Variable | Required | Description | Example |
-|----------|----------|-------------|---------|
-| `DAV_URL` | Yes | CalDAV/CardDAV server base URL (HTTPS required) | `https://dav.example.com` |
-| `DAV_USERNAME` | Yes | Authentication username | `user@example.com` |
-| `DAV_PASSWORD` | Yes | Authentication password | `your-password` |
-| `DAV_DEFAULT_CALENDAR` | No | Default calendar name to query (omit to query all) | `My Calendar` |
-| `DAV_DEFAULT_ADDRESSBOOK` | No | Default address book name to query (omit to query all) | `My Contacts` |
+- With **token command**, the server runs `DAV_TOKEN_COMMAND` to get an access token, either raw on stdout or as JSON `{"access_token": "...", "expires_at": <epoch seconds>}`, and refreshes it before every call. A single broker you control can then own the OIDC grant for several tools.
+- `DAV_CREDENTIALS_FILE` points to a file holding `DAV_USERNAME=…`, `DAV_PASSWORD=…` or `DAV_TOKEN=…` lines, so secrets stay out of the MCP client configuration.
 
-#### Bearer Token
+### Other options
 
-JWT Bearer token, sent as `Authorization: Bearer <token>`.
+| Variable | Description | Default |
+|---|---|---|
+| `DAV_DEFAULT_CALENDAR` | Calendar used when the assistant does not name one (`"all"` in a tool call still searches every calendar) | all calendars |
+| `DAV_DEFAULT_ADDRESSBOOK` | Address book used by default | all address books |
+| `DAV_ORGANIZER_EMAIL` / `DAV_ORGANIZER_NAME` | Organizer written in events that have attendees | none |
+| `DAV_RECURRING_WRITES` | `false` = `update_event` / `delete_event` refuse recurring series and occurrences | `true` |
+| `DAV_HREF_PREFIX` | Path prefix stripped by a reverse proxy, e.g. `/dav` for Twake Calendar / OpenPaaS | none |
+| `USER_TIMEZONE` | IANA time zone used to display and interpret dates, e.g. `Europe/Paris` | system time zone |
+| `LOG_LEVEL` | `fatal`, `error`, `warn`, `info`, `debug`, `trace` | `info` |
 
-| Variable | Required | Description | Example |
-|----------|----------|-------------|---------|
-| `DAV_URL` | Yes | CalDAV/CardDAV server base URL (HTTPS required) | `https://dav.example.com` |
-| `DAV_AUTH_METHOD` | Yes | Must be set to `bearer` | `bearer` |
-| `DAV_TOKEN` | Yes | JWT Bearer token | `eyJhbGciOiJSUzI1NiIs...` |
-| `DAV_DEFAULT_CALENDAR` | No | Default calendar name to query (omit to query all) | `My Calendar` |
-| `DAV_DEFAULT_ADDRESSBOOK` | No | Default address book name to query (omit to query all) | `My Contacts` |
+### Twake Calendar
 
-#### Optional
+Twake Calendar publishes its SabreDAV endpoint under `/dav/` and accepts OIDC Bearer tokens:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `LOG_LEVEL` | Log verbosity: `fatal`, `error`, `warn`, `info`, `debug`, `trace` | `info` (default) |
+```bash
+DAV_URL=https://calendar.example.com/dav/
+DAV_HREF_PREFIX=/dav
+DAV_AUTH_METHOD=command
+DAV_TOKEN_COMMAND="/usr/local/bin/my-token-broker token"
+DAV_ORGANIZER_EMAIL=jane.doe@example.com
+DAV_DEFAULT_CALENDAR="Jane Doe"
+```
 
-**Security Note:** HTTPS is enforced to prevent credential exposure. Only `localhost` and `127.0.0.1` are allowed over HTTP for development purposes.
+Without `DAV_HREF_PREFIX`, discovery fails with `cannot find homeUrl` or calendars come back empty.
 
-### Claude Desktop Configuration
+## Use it with your assistant
 
-To use mcp-twake-dav with Claude Desktop, add the following to your Claude Desktop configuration file:
+### Claude Desktop
 
-**Configuration file location:**
-- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Linux:** `~/.config/Claude/claude_desktop_config.json`
-- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-
-**Configuration (Basic Auth):**
+Edit `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Linux: `~/.config/Claude/`, Windows: `%APPDATA%\Claude\`), then restart Claude Desktop:
 
 ```json
 {
   "mcpServers": {
-    "twake": {
+    "twake-dav": {
       "command": "npx",
       "args": ["-y", "mcp-twake-dav"],
       "env": {
         "DAV_URL": "https://dav.example.com",
-        "DAV_USERNAME": "user@example.com",
+        "DAV_USERNAME": "jane.doe@example.com",
         "DAV_PASSWORD": "your-password",
         "DAV_DEFAULT_CALENDAR": "My Calendar",
-        "DAV_DEFAULT_ADDRESSBOOK": "My Contacts"
+        "DAV_DEFAULT_ADDRESSBOOK": "My Contacts",
+        "USER_TIMEZONE": "Europe/Paris"
       }
     }
   }
 }
 ```
 
-**Configuration (Bearer Token):**
+### Claude Code
 
-```json
-{
-  "mcpServers": {
-    "twake": {
-      "command": "npx",
-      "args": ["-y", "mcp-twake-dav"],
-      "env": {
-        "DAV_URL": "https://dav.example.com",
-        "DAV_AUTH_METHOD": "bearer",
-        "DAV_TOKEN": "your-jwt-token",
-        "DAV_DEFAULT_CALENDAR": "My Calendar",
-        "DAV_DEFAULT_ADDRESSBOOK": "My Contacts"
-      }
-    }
-  }
-}
+```bash
+claude mcp add twake-dav --scope user \
+  -e DAV_URL=https://dav.example.com \
+  -e DAV_USERNAME=jane.doe@example.com \
+  -e DAV_CREDENTIALS_FILE=~/.config/mcp-twake-dav/credentials \
+  -- npx -y mcp-twake-dav
 ```
 
-`DAV_DEFAULT_CALENDAR` and `DAV_DEFAULT_ADDRESSBOOK` are optional. When set, tools query only the named calendar/address book by default. Use `"all"` as a tool parameter to override and search all calendars or address books.
+### Hermes Agent
 
-After updating the configuration, restart Claude Desktop for changes to take effect.
+```yaml
+mcp_servers:
+  twake_dav:
+    command: npx
+    args: ["-y", "mcp-twake-dav"]
+    env:
+      DAV_URL: https://calendar.example.com/dav/
+      DAV_HREF_PREFIX: /dav
+      DAV_AUTH_METHOD: command
+      DAV_TOKEN_COMMAND: /usr/local/bin/my-token-broker token
+      DAV_ORGANIZER_EMAIL: jane.doe@example.com
+      DAV_RECURRING_WRITES: "false"
+```
 
-## Usage Examples
+### Other MCP clients
 
-Once configured, you can ask Claude natural language questions about your calendar and contacts:
+Any client that can launch a stdio MCP server works: command `npx`, arguments `-y mcp-twake-dav`, and the environment variables above.
 
-**Calendar queries:**
-- "What's my next meeting?"
-- "What's on my calendar today?"
-- "Show my schedule for this week"
-- "What meetings do I have next month?"
-- "When is my meeting with Pierre?"
-- "Find all meetings about the budget"
-- "Show me events with Marie as an attendee"
-- "Am I free tomorrow afternoon?"
-- "What's my first available 45-minute slot this week?"
+## Recommended safe configuration
 
-**Calendar management:**
-- "Create a meeting with Pierre tomorrow at 2pm"
-- "Move my 3pm meeting to 4pm"
-- "Delete the team sync event"
-- "Add a weekly standup every Monday at 9am"
-- "Add a 15 minute reminder to my dentist appointment"
-- "Remove the reminder from tomorrow's meeting"
-- "Move only Tuesday's standup to 10am" (single occurrence)
-- "Cancel just Friday's team meeting" (single occurrence)
+Creating, moving or deleting an event with attendees makes the server **email them in your name**, and contact deletion is final (CardDAV has no trash). For an assistant that acts on its own:
 
-**Invitation management:**
-- "Do I have any pending invitations?"
-- "Accept the team meeting invitation"
-- "Decline the conference call"
-- "Tentatively accept the lunch meeting"
+- ask it to confirm the recap (title, date, place, attendees) before `create_event`, `update_event` or `delete_event`;
+- set `DAV_RECURRING_WRITES=false` and edit recurring series in Twake Calendar;
+- filter out `respond_to_invitation` (and `delete_contact` if not needed) in your MCP client, for example with Hermes Agent:
 
-**Contact queries:**
-- "What's Marie's email address?"
-- "Show me Pierre's contact details"
-- "Find contacts working at LINAGORA"
-- "List all my contacts"
-- "Search for contacts named Martin"
-- "What address books do I have?"
+```yaml
+    tools:
+      exclude: [respond_to_invitation, delete_contact]
+```
 
-**Contact management:**
-- "Create a contact for Jean Dupont with email jean@example.com"
-- "Update Marie's phone number"
-- "Delete the contact for old-employee@example.com"
+Event descriptions and contact notes may be written by third parties (prompt injection). See [SECURITY.md](SECURITY.md).
 
-## Available Tools
+## Usage examples
 
-| Tool Name | Description |
-|-----------|-------------|
-| `get_next_event` | Get the next upcoming event. Optional `calendar` filter |
-| `get_todays_schedule` | Get all events for today, sorted by time. Optional `calendar` filter |
-| `get_events_in_range` | Get events for a date range (natural language). Optional `calendar` filter |
-| `search_events` | Search events by keyword or attendee. Optional `calendar` filter |
-| `check_availability` | Check free/busy availability for a time range. Optional `calendar` filter |
-| `list_calendars` | List all available calendars |
-| `create_event` | Create a new event with title, start, end, and optional recurrence |
-| `update_event` | Update an existing event by UID (partial updates, single occurrence with `instanceDate`) |
-| `delete_event` | Delete an event by UID (or single occurrence with `instanceDate`) |
-| `add_alarm` | Add a reminder to an event (natural language trigger: "15m", "1h", "1d") |
-| `remove_alarm` | Remove a reminder from an event by index or remove all |
-| `list_invitations` | List pending calendar invitations awaiting response |
-| `respond_to_invitation` | Accept, decline, or tentatively accept an invitation by UID |
-| `search_contacts` | Search contacts by name or organization. Optional `addressbook` filter |
-| `get_contact_details` | Get full details for a contact by name. Optional `addressbook` filter |
-| `list_contacts` | List contacts (limited to 30). Optional `addressbook` filter |
-| `list_addressbooks` | List all available address books |
-| `create_contact` | Create a new contact with name, email, phone, etc. |
-| `update_contact` | Update an existing contact by UID (partial updates) |
-| `delete_contact` | Delete a contact by UID |
+- "What's my next meeting, and where is it?"
+- "Show my schedule for this week."
+- "Am I free tomorrow afternoon? Find me a 45-minute slot."
+- "Create a meeting with Pierre on Thursday at 2 pm and invite him."
+- "Add a 15-minute reminder to my dentist appointment."
+- "Do I have pending invitations?"
+- "What's Marie's email address? Update her phone number."
 
 ## Troubleshooting
 
-### Common Issues and Solutions
+| Symptom | Fix |
+|---|---|
+| `Configuration validation failed` | Set the variables required by your `DAV_AUTH_METHOD` (see *Authentication*). |
+| `401 Unauthorized` | Check the credentials; with a token, check that it is valid and not expired. |
+| `URL must use HTTPS` | Use `https://` (HTTP is only accepted for `localhost` / `127.0.0.1`). |
+| `cannot find homeUrl` / empty calendars | The server sits behind a path prefix: set `DAV_HREF_PREFIX` (e.g. `/dav`). |
+| `Event not found` on update or delete | Pass the calendar name, or `calendar: "all"`. |
+| No calendars or address books | Check the account's permissions in the server's web interface. |
+| Tools missing in the client | Restart the client after editing its configuration; check that `npx` is in the `PATH`. |
 
-**1. "Configuration validation failed" / Missing environment variables**
-- **Problem:** Required environment variables are missing for the selected auth method
-- **Solution:** For basic auth (default): set `DAV_URL`, `DAV_USERNAME`, `DAV_PASSWORD`. For bearer auth: set `DAV_URL`, `DAV_AUTH_METHOD=bearer`, `DAV_TOKEN`
-
-**2. "Authentication failed" / 401 Unauthorized**
-- **Problem:** Invalid credentials or token
-- **Solution:** For basic auth: verify DAV_USERNAME and DAV_PASSWORD. For bearer auth: verify DAV_TOKEN is valid and not expired
-
-**3. "Cannot find server" / DNS resolution error**
-- **Problem:** The DAV_URL hostname cannot be resolved
-- **Solution:** Check the spelling of your DAV_URL. Ensure your server is accessible from your network. Try accessing the URL in a web browser
-
-**4. "Connection timed out" / Network timeout**
-- **Problem:** Server is unreachable or not responding
-- **Solution:** Verify your CalDAV/CardDAV server is online. Check firewall settings. Ensure you have network connectivity to the server
-
-**5. "URL must use HTTPS" / SSL certificate error**
-- **Problem:** HTTP connection attempted (insecure) or invalid SSL certificate
-- **Solution:** Use HTTPS in your DAV_URL (e.g., `https://dav.example.com`). For development on localhost, use `http://localhost` or `http://127.0.0.1`. If using a self-signed certificate, you must use a valid certificate for production
-
-**6. "SSL certificate error" / Certificate verification failed**
-- **Problem:** Self-signed or invalid SSL certificate on the server
-- **Solution:** Use a valid SSL certificate from a trusted Certificate Authority. Self-signed certificates are not supported in production environments
-
-**7. "No calendars found" / "No address books found"**
-- **Problem:** Authentication succeeded but no resources are available
-- **Solution:** Verify your account has CalDAV calendars or CardDAV address books configured. Check your permissions on the CalDAV/CardDAV server. Try accessing calendars/contacts via the server's web interface
-
-**8. Claude Desktop not showing tools / Tools not available**
-- **Problem:** MCP server not loaded or configuration error
-- **Solution:** Restart Claude Desktop after changing the configuration file. Verify the configuration file path is correct for your OS. Ensure `npx` is available in your PATH. Review Claude Desktop logs for error messages
-
-**9. "Cannot find module" / Module resolution error**
-- **Problem:** Package not installed or build directory missing (when running from source)
-- **Solution:** Use `npx -y mcp-twake-dav` (recommended) or, if running from source, run `npm run build` to compile TypeScript
-
-**10. Connection refused on localhost**
-- **Problem:** Development server not running or wrong port
-- **Solution:** For development, ensure your CalDAV/CardDAV server is running on localhost. Verify the port number in DAV_URL (e.g., `http://localhost:8080`)
-
-## Development
-
-For contributors working from source:
-
-```bash
-git clone https://github.com/mmaudet/mcp-twake-dav.git
-cd mcp-twake-dav
-npm install
-npm run build    # compile TypeScript
-npm test         # run tests
-npm run dev      # watch mode (auto-rebuild on file changes)
-```
-
-The server uses the MCP stdio transport and communicates via JSON-RPC on stdin/stdout.
+Run with `LOG_LEVEL=debug` for details (logs go to stderr).
 
 ## Architecture
 
-mcp-twake-dav is built with a layered architecture:
+```
+MCP client ⇄ stdio (JSON-RPC) ⇄ mcp-twake-dav ⇄ HTTPS (CalDAV / CardDAV) ⇄ Twake Calendar / any DAV server
+```
 
-1. **Configuration Layer** - Zod-based environment variable validation with fail-fast behavior and HTTPS enforcement
-2. **Logging Layer** - Pino logger configured for stderr output (prevents stdout contamination in MCP stdio transport)
-3. **CalDAV/CardDAV Client Layer** - Dual tsdav clients for CalDAV and CardDAV with discovery, multi-method authentication (Basic, Bearer), and connection validation
-4. **Infrastructure Layer** - Retry logic with exponential backoff and jitter, CTag-based caching for performance optimization
-5. **Service Layer** - CalendarService and AddressBookService with resource fetching and caching management
-6. **Transformation Layer** - iCal.js-based parsing of iCalendar and vCard formats, timezone normalization, RRULE expansion, parse-modify-serialize for updates
-7. **MCP Tool Layer** - 20 MCP tools exposing calendar and contact read/write functionality with natural language support and tool annotations
-8. **Entry Point** - MCP server initialization with stdio transport
+Layers: Zod configuration with HTTPS enforcement, Pino logger on stderr, [tsdav](https://github.com/natelindev/tsdav) clients with pluggable authentication and href-prefix rewriting, retry and CTag cache, calendar and address book services, [ical.js](https://github.com/kewisch/ical.js) transformers (iCalendar, vCard, RRULE, time zones), and the MCP tools.
 
-**Key design decisions:**
-- ESM modules with `.js` import extensions (required by MCP SDK)
-- Passive cache design (services check `isCollectionDirty`, not cache-driven fetches)
-- AI-friendly error formatting ("What went wrong" + "How to fix it" pattern)
-- Parse-modify-serialize for updates (preserves VALARM, X-properties, ATTENDEE parameters)
-- MCP tool annotations for AI clients (readOnlyHint, destructiveHint, openWorldHint)
+## Development
 
-## License
-
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
-
-See the [LICENSE](LICENSE) file for details.
-
-**Copyright (c) 2026 LINAGORA** <https://linagora.com>
+```bash
+npm install
+npm run build    # compile TypeScript
+npm test         # Vitest suite, no real server needed
+npm run dev      # watch mode
+node scripts/check-command-auth.mjs   # token-command refresh against a mock CalDAV server
+```
 
 ## Contributing
 
-Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) for details on the development workflow, code style, and pull request process.
+Contributions are welcome: read [CONTRIBUTING.md](CONTRIBUTING.md) and our [Code of Conduct](CODE_OF_CONDUCT.md). Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
-## Support
+## License
 
-For issues, questions, or feature requests, please open an issue on the GitHub repository.
+Licensed under the **GNU Affero General Public License v3.0** ([AGPL-3.0](LICENSE)).
 
-For commercial support or inquiries, contact LINAGORA at <https://linagora.com>.
+Copyright © 2026 [LINAGORA](https://linagora.com)
+
+## About
+
+`mcp-twake-dav` is developed by [LINAGORA](https://linagora.com), French open source software publisher, as part of [Twake.ai](https://twake.ai). For support, hosting or integration of Twake.ai and its AI connectors, contact LINAGORA at <https://linagora.com>.

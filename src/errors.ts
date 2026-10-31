@@ -60,7 +60,7 @@ export function formatStartupError(error: Error, url?: string): string {
       `Cannot find server${urlContext}.`,
       '',
       'Fix: Check the DAV_URL is spelled correctly and the server exists.',
-      'Example: DAV_URL=https://dav.linagora.com',
+      'Example: DAV_URL=https://dav.example.com',
     ].join('\n');
   }
 
