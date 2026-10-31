@@ -27,7 +27,7 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 - `search_events` filters before it cuts, so a match late in the range is found.
 - `get_next_event` widens its search step by step instead of downloading a year.
 - An unknown UID no longer reads every calendar. On Twake Calendar the lookup is one request on the JSON API; on other servers it is a UID query limited to 2 years around today, and the error says so. A UID in several calendars asks for a calendar name.
-- Contact searches and UID lookups are filtered by the server instead of reading the address book, and their output is bounded. On Twake, `list_contacts` pages on the server.
+- Contact searches and UID lookups are filtered by the server instead of reading the address book, and their output is bounded. On Twake, `list_contacts` pages on the server. Each page checks the CTag, so a contact added elsewhere is seen and a book changed between two pages is signalled.
 
 ## [3.1.0] - 2026-10-31
 

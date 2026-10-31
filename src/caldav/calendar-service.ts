@@ -8,7 +8,7 @@
  */
 
 import type { Logger } from 'pino';
-import { getCommandAuth, refreshCommandHeaders } from './client.js';
+import { freshAuthHeaders, getCommandAuth } from './client.js';
 import type { DAVCalendar, DAVCalendarObject } from 'tsdav';
 import type { DAVClientType } from './client.js';
 import type { Config } from '../config/schema.js';
@@ -109,10 +109,7 @@ export class CalendarService {
    * client proxy that refreshes the command token.
    */
   async getFreshAuthHeaders(): Promise<Record<string, string>> {
-    if (this.config.DAV_AUTH_METHOD === 'command') {
-      return refreshCommandHeaders(this.config);
-    }
-    return this.getAuthHeaders();
+    return freshAuthHeaders(this.config);
   }
 
   /**

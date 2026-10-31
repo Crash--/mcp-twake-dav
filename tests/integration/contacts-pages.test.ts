@@ -11,7 +11,7 @@ import { CalendarService } from '../../src/caldav/calendar-service.js';
 import { AddressBookService } from '../../src/caldav/addressbook-service.js';
 import { createServer } from '../../src/server.js';
 import type { Config } from '../../src/config/schema.js';
-import { addressObjects, startFakeDav, type FakeDav } from '../helpers/fake-dav.js';
+import { addressObjects, startFakeDav, type DavRequest, type FakeDav } from '../helpers/fake-dav.js';
 
 const logger = pino({ level: 'silent' });
 const vcard = (i: number) => `BEGIN:VCARD\r\nVERSION:3.0\r\nUID:c${i}\r\nFN:Person ${i}\r\nEND:VCARD\r\n`;
@@ -111,7 +111,7 @@ describe('contact pages', () => {
     };
     const first = await call('list_contacts', { limit: 20 });
     expect(first.isError).toBeFalsy();
-    expect(nextCursor(first.text)).toEqual({ book: 0, offset: 20 });
+    expect(nextCursor(first.text)).toEqual({ book: 0, offset: 20, version: '1' });
     expect(dav.requests.filter((r) => r.method === 'REPORT')).toHaveLength(0);
     expect(dav.requests.find((r) => r.method === 'GET')?.url).toContain('.json?limit=21&offset=0');
   });
@@ -136,4 +136,99 @@ describe('contact pages', () => {
     expect(isError).toBe(true);
     expect(text).toContain('"Nope" not found');
   });
+});
+
+describe('contacts on a server that changes', () => {
+  let dav: FakeDav;
+  let client: Client;
+  let ctag = '1';
+  let book = 2;
+
+  const reply = (req: DavRequest) => {
+    if (req.method === 'PROPFIND' && req.body.includes('getctag') && req.url === '/addressbooks/u1/contacts/') {
+      return { status: 207, headers: { 'content-type': 'application/xml' }, body: `<d:multistatus xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/"><d:response><d:href>${req.url}</d:href><d:propstat><d:prop><cs:getctag>${ctag}</cs:getctag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>` };
+    }
+    if (req.method === 'GET') return { status: 404 };
+    return req.method === 'REPORT' ? addressObjects(objects(book)) : null;
+  };
+
+  beforeAll(async () => {
+    dav = await startFakeDav();
+    const config = { DAV_URL: dav.url, DAV_AUTH_METHOD: 'basic', DAV_USERNAME: 'u', DAV_PASSWORD: 'p' } as Config;
+    const clients = await createDualClients(config, logger);
+    const server = createServer(new CalendarService(clients.caldav, logger, config), new AddressBookService(clients.carddav, logger, config), logger);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    client = new Client({ name: 'test', version: '1' }, { capabilities: {} });
+    await client.connect(clientTransport);
+  });
+
+  afterAll(async () => {
+    await client.close();
+    await dav.close();
+  });
+
+  beforeEach(() => {
+    dav.handler = reply;
+  });
+
+  const list = async (args: Record<string, unknown> = {}) =>
+    ((await client.callTool({ name: 'list_contacts', arguments: args })).content as Array<{ text: string }>).map((c) => c.text).join('\n');
+
+  it('sees a contact added on the server, whose CTag changed', async () => {
+    ctag = '1'; book = 2;
+    expect(await list()).toContain('Contacts (2 in this page)');
+    ctag = '2'; book = 3;
+    expect(await list()).toContain('Contacts (3 in this page)');
+  });
+
+  it('warns when the book changed between two pages', async () => {
+    ctag = '3'; book = 5;
+    const first = await list({ limit: 2 });
+    const cursor = JSON.parse(/nextCursor: (\{.*\})/.exec(first)![1]);
+    expect(cursor.version).toBe('3');
+    ctag = '4'; book = 4;
+    const second = await list({ limit: 2, cursor });
+    expect(second).toContain('changed since the previous page');
+  });
+
+  it('does not warn when the book did not change', async () => {
+    ctag = '5'; book = 5;
+    const first = await list({ limit: 2 });
+    const cursor = JSON.parse(/nextCursor: (\{.*\})/.exec(first)![1]);
+    expect(await list({ limit: 2, cursor })).not.toContain('changed since');
+  });
+});
+
+describe('the JSON API of contacts', () => {
+  let dav: FakeDav;
+  let service: AddressBookService;
+
+  beforeAll(async () => {
+    dav = await startFakeDav();
+    const config = { DAV_URL: dav.url, DAV_AUTH_METHOD: 'basic', DAV_USERNAME: 'u', DAV_PASSWORD: 'p' } as Config;
+    service = new AddressBookService((await createDualClients(config, logger)).carddav, logger, config);
+  });
+
+  afterAll(async () => {
+    await dav.close();
+  });
+
+  it('a 429 is an error and does not fall back on a whole read for the process', async () => {
+    dav.requests.length = 0;
+    let limited = true;
+    dav.handler = (req) => {
+      if (req.method === 'REPORT') return addressObjects(objects(1));
+      if (req.method !== 'GET') return null;
+      return limited
+        ? { status: 429, headers: { 'retry-after': '0' } }
+        : { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ _embedded: { 'dav:item': [] } }) };
+    };
+    await expect(service.listContactsPage(undefined, 5)).rejects.toThrow('HTTP 429');
+    expect(dav.requests.filter((r) => r.method === 'REPORT')).toHaveLength(0);
+    limited = false;
+    await service.listContactsPage(undefined, 5);
+    expect(dav.requests.filter((r) => r.method === 'REPORT')).toHaveLength(0);
+    expect(dav.requests.at(-1)?.url).toContain('sort=uri');
+  }, 15000);
 });

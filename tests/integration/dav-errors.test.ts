@@ -60,7 +60,7 @@ describe('DAV failures reach the model', () => {
     const clients = await createDualClients(config, logger);
     return {
       service: new AddressBookService(clients.carddav, logger),
-      tool: async (service: AddressBookService) => (await service.fetchAllContacts()).map((v) => v.data).join(' '),
+      tool: async (service: AddressBookService) => (await service.listContactsPage(undefined, 30)).vcards.map((v) => v.data).join(' '),
       callInToolContext: async (fn: () => Promise<string>) => {
         const result = await runToolCall(new AbortController().signal, async () => ({ content: [{ text: await fn() }] as unknown[] }));
         return { warning: (result.content.at(-1) as { text: string }).text };

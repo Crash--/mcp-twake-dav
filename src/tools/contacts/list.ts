@@ -62,7 +62,7 @@ export function registerListContactsTool(
             content: [
               {
                 type: 'text' as const,
-                text: 'No contacts found in any address book',
+                text: params.cursor ? 'No more contacts.' : 'No contacts found in any address book',
               },
             ],
           };

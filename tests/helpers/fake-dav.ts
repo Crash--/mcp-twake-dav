@@ -68,6 +68,9 @@ function discovery(req: DavRequest, calendars: string[]): DavReply {
     const reports = '<d:supported-report-set><d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report><d:supported-report><d:report><c:calendar-multiget/></d:report></d:supported-report></d:supported-report-set>';
     return { status: 207, body: multistatus(propResponse(req.url, reports)), headers: XML };
   }
+  if (prop('getctag')) {
+    return { status: 207, body: multistatus(propResponse(req.url, '<cs:getctag>1</cs:getctag>')), headers: XML };
+  }
   if (prop('current-user-principal')) {
     return { status: 207, body: multistatus(propResponse('/', '<d:current-user-principal><d:href>/principals/u1/</d:href></d:current-user-principal>')), headers: XML };
   }
