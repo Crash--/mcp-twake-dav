@@ -37,8 +37,12 @@ function parseIsoInput(value: string, timeZone: string | undefined, asEnd: boole
   if (!match) return null;
   const [, year, month, day, hour, minute, second, offset] = match;
   const wallClock = Date.UTC(+year, +month - 1, +day, +(hour ?? 0), +(minute ?? 0), +(second ?? 0));
-  // Date.UTC rolls February 31 over to March.
-  if (new Date(wallClock).getUTCDate() !== +day) return null;
+  // Date.UTC rolls February 31 over to March, 14:99 to 15:39, month 13 to next year and year 99 to 1999.
+  const read = new Date(wallClock);
+  if (
+    read.getUTCFullYear() !== +year || read.getUTCMonth() !== +month - 1 || read.getUTCDate() !== +day
+    || read.getUTCHours() !== +(hour ?? 0) || read.getUTCMinutes() !== +(minute ?? 0) || read.getUTCSeconds() !== +(second ?? 0)
+  ) return null;
   if (offset) {
     const instant = Date.parse(value);
     return Number.isNaN(instant) ? null : instant;
@@ -412,6 +416,8 @@ export const paginationParams = {
     start: z.string().datetime({ offset: true }),
     skip: z.number().int().min(0).max(MAX_CURSOR_SKIP),
   }).optional().describe('The value of nextCursor in the previous response. Repeat the same dates and filters with it.'),
+  // A model used to the old schema would have its dates dropped, and read the default window as its answer.
+  when: z.never({ error: 'when is gone: pass start and end in ISO 8601.' }).optional().describe('Not a parameter any more: pass start and end.'),
   // A model may repeat the name it read in the response: the schema would drop it and page 1 would come back.
   nextCursor: z.never({ error: 'Pass the value of nextCursor as the cursor parameter.' }).optional().describe('Not a parameter: pass the value of nextCursor as cursor.'),
 };

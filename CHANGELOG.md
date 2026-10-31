@@ -16,7 +16,8 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 - A failing DAV read (401, 413, 429, 500, multiget included, or an error inside a 207) or an unknown calendar or address book name is an error for the assistant, with its status and what to do. Objects that could not be read are named next to the result, and so is a calendar this account has no access to: the other calendars still answer, and `check_availability` then says availability is unknown.
 - Every DAV request has a 30 second timeout and is cancelled with its tool call. A read is retried only on 429, 503 and network errors, and `Retry-After` is honoured up to 10 seconds.
 - PUT and DELETE are never retried. A write without an answer says that its outcome is unknown and must be checked first.
-- Dates and "today" follow `USER_TIMEZONE`, not the time zone of the process.
+- The read tools follow `USER_TIMEZONE`, not the time zone of the process, for their dates, "today", all-day events and times without a zone. `create_event` and `update_event` still read dates in the time zone of the process.
+- A cancelled or moved occurrence is recognised with a `RECURRENCE-ID;TZID`, and an event of several days shows its end date.
 - `check_availability` reads all calendars, not only the first one.
 - An event appears in every range it overlaps, including an occurrence moved from another date.
 - `search_events` filters before it cuts, so a match late in the range is found.

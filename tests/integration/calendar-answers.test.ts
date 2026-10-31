@@ -102,6 +102,20 @@ describe('calendar answers', () => {
       expect(text).toContain('HTTP 500');
     });
 
+    it.each([
+      ['an unreadable object', 'not ical'],
+      ['an invalid RRULE', ical('bad', '20261103T100000Z').replace('SUMMARY', 'RRULE:FREQ=NOPE\r\nSUMMARY')],
+    ])('does not say free with %s on the fallback', async (_label, data) => {
+      dav.handler = (req) => {
+        if (req.method !== 'REPORT') return null;
+        if (req.body.includes('free-busy-query')) return { status: 501 };
+        return calendarObjects([{ href: '/calendars/u1/Perso/bad.ics', ical: data }]);
+      };
+      const { isError, text } = await call('check_availability', range);
+      expect(isError).toBe(true);
+      expect(text).not.toContain('You are free');
+    });
+
     it('refuses natural language', async () => {
       const { isError, text } = await call('check_availability', { start: 'Thursday afternoon', end: 'Friday' });
       expect(isError).toBe(true);
@@ -137,6 +151,12 @@ describe('calendar answers', () => {
     expect(reports().length).toBeLessThanOrEqual(4);
     const spans = reports().map((r) => /start="(\d+)T.*?end="(\d+)T/.exec(r.body)!);
     expect(spans.every((s) => Number(s[2]) - Number(s[1]) < 100)).toBe(true);
+  });
+
+  it.each(['get_events_in_range', 'search_events'])('%s refuses the old when, instead of ignoring it', async (name) => {
+    const result = await client.callTool({ name, arguments: { query: 'x', when: 'next month' } });
+    expect(result.isError).toBe(true);
+    expect((result as { content: Array<{ text: string }> }).content[0].text).toContain('pass start and end');
   });
 
   it('get_next_event says how far it looked', async () => {

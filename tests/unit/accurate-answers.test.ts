@@ -207,3 +207,9 @@ describe('exceptions of a series with a TZID', () => {
     expect(on('2026-10-26', summer)).toEqual(['series 2026-10-26T08:00:00.000Z']);
   });
 });
+
+describe('impossible dates', () => {
+  it.each(['2026-13-01', '2026-11-03T14:99', '2026-11-03T25:00', '2026-11-03T14:00:61', '0099-01-01'])('refuses %s', (value) => {
+    expect(parseDateRange(value, undefined, 7, PARIS)).toHaveProperty('problem');
+  });
+});

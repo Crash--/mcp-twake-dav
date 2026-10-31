@@ -153,6 +153,13 @@ describe('walks', () => {
     expect(later).toBeTruthy();
   });
 
+  it('walks events already running at the start of the range', async () => {
+    const running = (i: number) => ical(['BEGIN:VEVENT', `UID:r${i}`, 'DTSTAMP:20260101T000000Z', `SUMMARY:r${i}`, `DTSTART:${basic(T0 - DAY * (i + 1))}`, `DTEND:${basic(T0 + DAY)}`, 'END:VEVENT']);
+    serve(running(0), running(1), running(2));
+    const seen = await walk('get_events_in_range', { ...range, limit: 1 });
+    expect(seen).toHaveLength(3);
+  });
+
   it('refuses nextCursor as an argument, instead of giving page 1 again', async () => {
     await expect(client.callTool({ name: 'get_events_in_range', arguments: { ...range, nextCursor: { start: '2026-11-02T10:00:00Z', skip: 0 } } }))
       .resolves.toMatchObject({ isError: true });
