@@ -8,22 +8,16 @@ import pino from 'pino';
 import { createDualClients, type DAVClientType } from '../../src/caldav/client.js';
 import { CalendarService } from '../../src/caldav/calendar-service.js';
 import type { Config } from '../../src/config/schema.js';
-import { startFakeDav, type FakeDav } from '../helpers/fake-dav.js';
+import { calendarObjects, startFakeDav, type DavRequest, type DavReply, type FakeDav } from '../helpers/fake-dav.js';
 
 const logger = pino({ level: 'silent' });
 const JSON_HEADERS = { 'content-type': 'application/json' };
-const jcal = (uid: string) => ['vcalendar', [['version', {}, 'text', '2.0']], [
-  ['vevent', [
-    ['uid', {}, 'text', uid],
-    ['dtstart', {}, 'date-time', '2026-11-03T10:00:00Z'],
-    ['dtend', {}, 'date-time', '2026-11-03T11:00:00Z'],
-    ['summary', {}, 'text', 'Found'],
-  ], []],
-]];
-const found = (uid: string, calendar = 'Perso') => ({
+// An unescaped comma: sabre cuts this text in its JSON answer, so only the raw object is whole.
+const raw = (uid: string) => `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:${uid}\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:20261103T100000Z\r\nDTEND:20261103T110000Z\r\nSUMMARY:Found\r\nDESCRIPTION:First part, second part\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+const found = (href: string): DavReply => ({
   status: 200,
   headers: JSON_HEADERS,
-  body: JSON.stringify({ _embedded: { 'dav:item': [{ _links: { self: { href: `/calendars/u1/${calendar}/x.ics` } }, etag: '"e1"', data: jcal(uid) }] } }),
+  body: JSON.stringify({ _embedded: { 'dav:item': [{ _links: { self: { href } }, etag: '"json"', data: ['vcalendar', [], [['vevent', [['uid', {}, 'text', 'cut']], []]]] }] } }),
 });
 
 describe('findEventByUid', () => {
@@ -47,20 +41,34 @@ describe('findEventByUid', () => {
   });
 
   const service = () => new CalendarService(client, logger, config);
-  const twake = (onUid: () => { status: number; headers?: Record<string, string>; body?: string }) => {
-    dav.handler = (req) => {
-      if (req.url !== '/calendars/u1.json') return req.method === 'REPORT' ? { status: 500 } : null;
-      return req.method === 'GET' ? { status: 200, headers: JSON_HEADERS, body: '{}' } : onUid();
-    };
-  };
   const reports = () => dav.requests.filter((r) => r.method === 'REPORT');
 
-  it('finds an event through the JSON API, with its URL and ETag', async () => {
-    twake(() => found('a'));
+  /** A Twake home: `onUid` answers the JSON lookup, `objects` the GET, `queries` the calendar queries by path. */
+  const twake = (onUid: () => DavReply, objects: Record<string, string> = {}, queries: (req: DavRequest) => DavReply = () => calendarObjects([])) => {
+    dav.handler = (req) => {
+      if (req.url === '/calendars/u1.json') {
+        return req.method === 'GET' ? { status: 200, headers: JSON_HEADERS, body: '{}' } : onUid();
+      }
+      if (req.method === 'GET') {
+        const body = objects[req.url];
+        return body ? { status: 200, headers: { 'content-type': 'text/calendar', etag: '"raw"' }, body } : { status: 404 };
+      }
+      return req.method === 'REPORT' ? queries(req) : null;
+    };
+  };
+
+  it('finds an event through the JSON API, then reads the object as stored', async () => {
+    twake(() => found('/calendars/u1/Perso/x.ics'), { '/calendars/u1/Perso/x.ics': raw('a') });
     const event = await service().findEventByUid('a');
     expect(event?.url).toBe(`${dav.url}calendars/u1/Perso/x.ics`);
-    expect(event?.etag).toBe('"e1"');
-    expect(event?.summary).toBe('Found');
+    expect(event?.etag).toBe('"raw"');
+    expect(event?._raw).toContain('First part, second part');
+  });
+
+  it('accepts a colon in the name of the object', async () => {
+    twake(() => found('/calendars/u1/Perso/urn:uuid:abc.ics'), { '/calendars/u1/Perso/urn:uuid:abc.ics': raw('a') });
+    const event = await service().findEventByUid('a');
+    expect(event?.url).toBe(`${dav.url}calendars/u1/Perso/urn:uuid:abc.ics`);
   });
 
   it('answers an unknown UID in one request on the JSON API', async () => {
@@ -73,9 +81,33 @@ describe('findEventByUid', () => {
     expect(dav.requests.filter((r) => r.method === 'GET')).toHaveLength(1);
   });
 
-  it('ignores a match in another calendar than the one asked', async () => {
-    twake(() => found('a', 'Pro'));
-    await expect(service().findEventByUid('a', 'Perso')).resolves.toBeNull();
+  it('finds the copy in the calendar asked, when the server names another one', async () => {
+    twake(() => found('/calendars/u1/Pro/other.ics'), {}, (req) =>
+      req.url === '/calendars/u1/Perso/' ? calendarObjects([{ href: '/calendars/u1/Perso/mine.ics', ical: raw('dup') }]) : calendarObjects([])
+    );
+    const event = await service().findEventByUid('dup', 'Perso');
+    expect(event?.url).toBe(`${dav.url}calendars/u1/Perso/mine.ics`);
+    expect(reports().at(-1)?.body).not.toContain('time-range');
+  });
+
+  it('says not found when the calendar asked holds no copy', async () => {
+    twake(() => found('/calendars/u1/Pro/other.ics'));
+    await expect(service().findEventByUid('dup', 'Perso')).resolves.toBeNull();
+  });
+
+  it('does not choose between two copies without a calendar name', async () => {
+    twake(
+      () => found('/calendars/u1/Perso/a.ics'),
+      { '/calendars/u1/Perso/a.ics': raw('dup') },
+      (req) => (req.url === '/calendars/u1/Pro/' ? calendarObjects([{ href: '/calendars/u1/Pro/b.ics', ical: raw('dup') }]) : calendarObjects([])),
+    );
+    await expect(service().findEventByUid('dup')).rejects.toThrow(/several calendars: "Perso", "Pro"/);
+  });
+
+  it('asks the other calendars only when the UID exists', async () => {
+    twake(() => found('/calendars/u1/Perso/a.ics'), { '/calendars/u1/Perso/a.ics': raw('a') });
+    await expect(service().findEventByUid('a')).resolves.toMatchObject({ uid: 'a' });
+    expect(reports().map((r) => r.url)).toEqual(['/calendars/u1.json', '/calendars/u1/Pro/']);
   });
 
   it('reports a failing JSON API as an error', async () => {
@@ -83,14 +115,35 @@ describe('findEventByUid', () => {
     await expect(service().findEventByUid('a')).rejects.toThrow('HTTP 500');
   });
 
-  it('reports a failing probe as an error', async () => {
-    dav.handler = (req) => (req.method === 'GET' ? { status: 401 } : null);
-    await expect(service().findEventByUid('a')).rejects.toThrow('HTTP 401');
+  it('reports a failing read of the object as an error', async () => {
+    dav.handler = (req) => {
+      if (req.url === '/calendars/u1.json') {
+        return req.method === 'GET' ? { status: 200, headers: JSON_HEADERS, body: '{}' } : found('/calendars/u1/Perso/x.ics');
+      }
+      return req.method === 'GET' ? { status: 500 } : null;
+    };
+    await expect(service().findEventByUid('a')).rejects.toThrow('HTTP 500');
   });
 
-  it('uses a bounded UID query on another server, in every calendar', async () => {
+  it.each([401, 403, 429, 500])('a probe in %i is an error, and the API is asked again next time', async (status) => {
+    let fail = true;
     dav.handler = (req) => {
-      if (req.method === 'GET') return { status: 404 };
+      if (req.url !== '/calendars/u1.json') return null;
+      if (req.method === 'REPORT') return { status: 404 };
+      return fail ? { status, headers: { 'retry-after': '0' } } : { status: 200, headers: JSON_HEADERS, body: '{}' };
+    };
+    const calendars = service();
+    await expect(calendars.findEventByUid('a')).rejects.toThrow(`HTTP ${status}`);
+    fail = false;
+    await expect(calendars.findEventByUid('a')).resolves.toBeNull();
+  }, 15000);
+
+  it.each([
+    ['a 404', { status: 404 }],
+    ['an HTML page', { status: 200, headers: { 'content-type': 'text/html' }, body: '<html/>' }],
+  ])('%s on the probe means another server, with a bounded UID query in every calendar', async (_label, probe) => {
+    dav.handler = (req) => {
+      if (req.method === 'GET') return probe;
       return req.method === 'REPORT'
         ? { status: 207, headers: { 'content-type': 'application/xml' }, body: '<d:multistatus xmlns:d="DAV:"></d:multistatus>' }
         : null;
@@ -101,6 +154,14 @@ describe('findEventByUid', () => {
       expect(report.body).toContain('name="UID"');
       expect(report.body).toContain('time-range');
     }
+  });
+
+  it('refuses two copies on another server too', async () => {
+    dav.handler = (req) => {
+      if (req.method === 'GET') return { status: 404 };
+      return req.method === 'REPORT' ? calendarObjects([{ href: `${req.url}a.ics`, ical: raw('dup') }]) : null;
+    };
+    await expect(service().findEventByUid('dup')).rejects.toThrow('several calendars');
   });
 
   it('refuses an unknown calendar name', async () => {

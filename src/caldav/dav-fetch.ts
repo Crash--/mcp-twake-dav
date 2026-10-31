@@ -135,6 +135,17 @@ function checkReadBody(method: string, url: string, requestBody: string, status:
   if (method === 'REPORT') checkMultiStatus(url, requestBody, status, text);
 }
 
+/**
+ * Whether a GET on a .json URL shows the JSON API of esn-sabre. Only what proves its
+ * absence says no: a refusal or a limit says nothing, and the answer is kept for the process.
+ */
+export function answersJson(response: Response): boolean {
+  if ([401, 403, 429].includes(response.status) || response.status >= 500) {
+    throw new DavHttpError(response.status, response.headers.get('retry-after'));
+  }
+  return response.ok && /json/i.test(response.headers.get('content-type') ?? '');
+}
+
 export const guardedFetch: typeof fetch = async (input, init) => {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const signals = [timeout, toolCall.getStore()?.signal, init?.signal].filter((s): s is AbortSignal => !!s);
