@@ -135,8 +135,11 @@ export class ConflictError extends Error {
 }
 
 function davStatusAdvice(status: number): string {
-  if (status === 401 || status === 403) {
-    return 'Fix: The DAV server refused the credentials or the access. Check that the token or password is still valid.';
+  if (status === 401) {
+    return 'Fix: The DAV server refused the credentials. Check that the token or password is still valid.';
+  }
+  if (status === 403) {
+    return 'Fix: This account has no access to what was asked. Ask its owner for access, or name another calendar or address book.';
   }
   if (status === 413) {
     return 'Fix: The request is too large for the server. Ask for a narrower date range.';

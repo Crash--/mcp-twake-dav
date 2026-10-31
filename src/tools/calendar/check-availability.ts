@@ -20,6 +20,7 @@ import {
   formatAllDaySpan,
 } from './utils.js';
 import type { EventDTO } from '../../types/dtos.js';
+import { hasPartialRead } from '../../caldav/dav-fetch.js';
 
 /** Availability answer for [queryStart, queryEnd): busy periods clipped to the range, then all-day events. */
 export function buildAvailabilityText(
@@ -136,6 +137,16 @@ export function registerCheckAvailabilityTool(
 
         const timeRange = { start: startDate.toISOString(), end: endDate.toISOString() };
         const rawEvents = await resolveCalendarEvents(calendarService, params.calendar, defaultCalendar, timeRange);
+        // Anything not read could be what makes this time busy.
+        if (hasPartialRead()) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'Availability is unknown: some events could not be read, so this time cannot be called free.',
+            }],
+            isError: true,
+          };
+        }
         // every event counts: a truncated list would report busy slots as free
         const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, Number.POSITIVE_INFINITY);
         const displayTimezone = userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;

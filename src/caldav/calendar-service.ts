@@ -16,8 +16,8 @@ import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { discoverCalendars, discoverSchedulingInbox } from './discovery.js';
 import { randomUUID } from 'node:crypto';
-import { ConflictError, isDavUnsupported } from '../errors.js';
-import { hasPartialRead } from './dav-fetch.js';
+import { ConflictError, DavHttpError, isDavUnsupported } from '../errors.js';
+import { addReadWarning, hasPartialRead } from './dav-fetch.js';
 import { transformCalendarObject } from '../transformers/event.js';
 import { transformInvitation, type InboxResponse } from '../transformers/invitation.js';
 import { updateAttendeePartstat } from '../transformers/event-builder.js';
@@ -258,9 +258,25 @@ export class CalendarService {
     await this.listCalendars();
 
     // Fetch from all calendars in parallel
+    const refused: DAVCalendar[] = [];
+    let lastRefusal: unknown;
     const results = await Promise.all(
-      this.calendars.map((cal) => this.fetchEvents(cal, timeRange))
+      this.calendars.map(async (cal) => {
+        try {
+          return await this.fetchEvents(cal, timeRange);
+        } catch (err) {
+          // One calendar without read rights must not hide the others.
+          if (!(err instanceof DavHttpError) || err.status !== 403) throw err;
+          refused.push(cal);
+          lastRefusal = err;
+          return [];
+        }
+      })
     );
+    if (refused.length === this.calendars.length && lastRefusal) throw lastRefusal;
+    for (const cal of refused) {
+      addReadWarning(`The calendar "${String(cal.displayName || cal.url)}" could not be read: this account has no read access to it (HTTP 403).`);
+    }
 
     // Flatten results
     const flattened = results.flat();

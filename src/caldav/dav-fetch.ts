@@ -28,11 +28,17 @@ export async function runToolCall<T extends { content: unknown[] }>(signal: Abor
   return result;
 }
 
+/** Tell the model, next to the result, about something this tool call could not read. */
+export function addReadWarning(warning: string): void {
+  toolCall.getStore()?.warnings.push(warning);
+}
+
 /** A partial read must not be kept as if it were the whole collection. */
 export function hasPartialRead(): boolean {
   return (toolCall.getStore()?.warnings.length ?? 0) > 0;
 }
 
+const CDATA = /<!\[CDATA\[[\s\S]*?\]\]>/g;
 const HREF = /<(?:[\w-]+:)?href>\s*([^<]*?)\s*<\/(?:[\w-]+:)?href>/;
 const STATUS = /<(?:[\w-]+:)?status>\s*HTTP\/\S+\s+(\d{3})/;
 const RESPONSE_BLOCK = /<(?:[\w-]+:)?response[\s>][\s\S]*?<\/(?:[\w-]+:)?response>/g;
@@ -62,12 +68,17 @@ function readObject(block: string): ObjectResult {
 }
 
 function readObjects(xml: string): ObjectResult[] {
-  return (xml.match(RESPONSE_BLOCK) ?? []).map(readObject);
+  // Event data in CDATA may hold any text, including closing tags.
+  return (xml.replace(CDATA, '').match(RESPONSE_BLOCK) ?? []).map(readObject);
 }
 
 /** tsdav throws on any failed object of a 207: those were named, the others go through. */
 function withoutFailedObjects(xml: string): string {
-  return xml.replace(RESPONSE_BLOCK, (block) => (readObject(block).failure === null ? block : ''));
+  const data: string[] = [];
+  return xml
+    .replace(CDATA, (cdata) => `<![CDATA[${data.push(cdata) - 1}]]>`)
+    .replace(RESPONSE_BLOCK, (block) => (readObject(block).failure === null ? block : ''))
+    .replace(/<!\[CDATA\[(\d+)\]\]>/g, (_, index) => data[Number(index)]);
 }
 
 const pathOf = (href: string, base: string) => new URL(href, base).pathname.replace(/\/$/, '');
@@ -92,17 +103,16 @@ function checkMultiStatus(url: string, requestBody: string, status: number, xml:
   if (onCollection) throw new DavHttpError(onCollection.failure as number, null, `inside a ${status} multi-status`);
 
   if (failures.length + missing.length === 0) return;
-  if (failures.length === objects.length) {
-    throw new DavHttpError(failures[0]?.failure ?? 404, null, `for all ${failures.length + missing.length} objects, inside a ${status} multi-status`);
+  if (failures.length > 0 && failures.length === objects.length) {
+    throw new DavHttpError(failures[0].failure as number, null, `for all ${failures.length} objects, inside a ${status} multi-status`);
   }
 
-  const warnings = toolCall.getStore()?.warnings;
   const names = (hrefs: string[]) => `${hrefs.slice(0, 5).map((h) => h.split('/').pop()).join(', ')}${hrefs.length > 5 ? ', ...' : ''}`;
   if (failures.length > 0) {
-    warnings?.push(`The server failed on ${failures.length} object(s) (HTTP ${failures[0].failure}): ${names(failures.map((o) => o.href))}.`);
+    addReadWarning(`The server failed on ${failures.length} object(s) (HTTP ${failures[0].failure}): ${names(failures.map((o) => o.href))}.`);
   }
   if (missing.length > 0) {
-    warnings?.push(`The server did not return ${missing.length} object(s), probably deleted just now: ${names(missing)}.`);
+    addReadWarning(`The server did not return ${missing.length} object(s), probably deleted just now: ${names(missing)}.`);
   }
 }
 
