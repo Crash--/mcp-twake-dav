@@ -28,13 +28,13 @@ export interface InboxResponse {
  * the current user's PARTSTAT from ATTENDEE properties.
  *
  * @param response - Raw response from calendarQuery on inbox
- * @param userEmail - Current user's email to match in ATTENDEE list
+ * @param userEmails - Current user's lowercase emails to match in ATTENDEE list
  * @param logger - Pino logger for error/debug output
  * @returns Parsed InvitationDTO or null if parsing fails
  */
 export function transformInvitation(
   response: InboxResponse,
-  userEmail: string,
+  userEmails: string[],
   logger: Logger
 ): InvitationDTO | null {
   try {
@@ -81,17 +81,18 @@ export function transformInvitation(
       }
     }
 
-    // Find current user's PARTSTAT from attendees
-    let userPartstat = 'NEEDS-ACTION';
-    const normalizedUserEmail = userEmail.toLowerCase();
+    // Find current user's PARTSTAT from attendees, empty if the user is not one of them
+    let userPartstat = '';
+    let attendeeEmail: string | undefined;
 
     for (const attendee of event.attendees) {
       const attendeeValue = attendee.getFirstValue();
       if (typeof attendeeValue === 'string') {
-        const attendeeEmail = attendeeValue.replace(/^mailto:/i, '').toLowerCase();
-        if (attendeeEmail === normalizedUserEmail) {
+        const email = attendeeValue.replace(/^mailto:/i, '').toLowerCase();
+        if (userEmails.includes(email)) {
           const partstatParam = attendee.getParameter('partstat');
           userPartstat = (typeof partstatParam === 'string' ? partstatParam : undefined) || 'NEEDS-ACTION';
+          attendeeEmail = email;
           break;
         }
       }
@@ -108,6 +109,7 @@ export function transformInvitation(
       proposedEnd: event.endDate.toJSDate(),
       location: event.location || undefined,
       userPartstat,
+      attendeeEmail,
       url: response.href,
       etag: response.props?.getetag || '',
       _raw: calendarData,

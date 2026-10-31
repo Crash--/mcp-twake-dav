@@ -18,13 +18,11 @@ import type { InvitationDTO } from '../../types/dtos.js';
  * @param server - MCP server instance
  * @param calendarService - Calendar service for responding to invitations
  * @param logger - Pino logger
- * @param config - Configuration with DAV_USERNAME for attendee email
  */
 export function registerRespondInvitationTool(
   server: McpServer,
   calendarService: CalendarService,
   logger: Logger,
-  config: { DAV_USERNAME?: string },
 ): void {
   server.tool(
     'respond_to_invitation',
@@ -47,18 +45,6 @@ export function registerRespondInvitationTool(
       try {
         logger.debug({ params }, 'respond_to_invitation called');
 
-        // Get user email from config
-        const userEmail = config.DAV_USERNAME || '';
-        if (!userEmail) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: 'Cannot determine user email. DAV_USERNAME configuration is required for invitation responses.',
-            }],
-            isError: true,
-          };
-        }
-
         // Map response to PARTSTAT value
         const partstatMap: Record<string, 'ACCEPTED' | 'DECLINED' | 'TENTATIVE'> = {
           accept: 'ACCEPTED',
@@ -67,28 +53,8 @@ export function registerRespondInvitationTool(
         };
         const partstat = partstatMap[params.response];
 
-        // Find the invitation by UID (need to query pending invitations)
-        const invitations = await calendarService.listPendingInvitations();
-        const invitation = invitations.find((inv) => inv.uid === params.uid);
-
-        if (!invitation) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Invitation not found with UID: ${params.uid}\n\nUse list_invitations to see pending invitations and their UIDs.`,
-            }],
-            isError: true,
-          };
-        }
-
         // Respond to invitation
-        await calendarService.respondToInvitation(
-          invitation.url,
-          invitation.etag,
-          userEmail,
-          partstat,
-          invitation._raw
-        );
+        const invitation = await calendarService.respondToInvitation(params.uid, partstat);
 
         // Build response message
         const responseText = buildResponseMessage(invitation, params.response, partstat);
