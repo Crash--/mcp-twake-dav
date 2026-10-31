@@ -45,7 +45,7 @@ async function main() {
 
     // Step 5: Initialize services
     const calendarService = new CalendarService(clients.caldav, logger, config);
-    const addressBookService = new AddressBookService(clients.carddav, logger);
+    const addressBookService = new AddressBookService(clients.carddav, logger, config);
     logger.info('Calendar and AddressBook services initialized');
 
     // Step 6: Initialize MCP server with tools registered

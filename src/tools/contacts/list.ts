@@ -9,7 +9,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { AddressBookService } from '../../caldav/addressbook-service.js';
 import {
-  resolveAddressBookContacts,
+  contactPageParams,
+  resolveAddressBookName,
+  toContacts,
+  formatContactFooter,
+  DEFAULT_CONTACT_LIMIT,
   formatContactSummary,
 } from './utils.js';
 
@@ -28,8 +32,9 @@ export function registerListContactsTool(
 ): void {
   server.tool(
     'list_contacts',
-    'List contacts from address books. Shows a summary of each contact (name, email, organization). Limited to 30 contacts. Optionally filter by address book name.',
+    'List contacts from address books, one page at a time. Shows a summary of each contact (name, email, organization). When the response has a nextCursor, more contacts remain. Use search_contacts to find a specific contact. Optionally filter by address book name.',
     {
+      ...contactPageParams,
       addressbook: z.string().optional().describe(
         'Address book name to list from. Use "all" to list from all address books. ' +
         (defaultAddressBook ? `Defaults to "${defaultAddressBook}".` : 'Defaults to all address books.')
@@ -44,10 +49,12 @@ export function registerListContactsTool(
       try {
         logger.debug('list_contacts called');
 
-        // Fetch contacts based on addressbook param / default / all
-        const contacts = await resolveAddressBookContacts(
-          addressBookService, params.addressbook, defaultAddressBook, logger
+        const { vcards, nextCursor } = await addressBookService.listContactsPage(
+          resolveAddressBookName(params.addressbook, defaultAddressBook),
+          params.limit ?? DEFAULT_CONTACT_LIMIT,
+          params.cursor,
         );
+        const contacts = toContacts(vcards, logger);
 
         if (contacts.length === 0) {
           logger.info('No contacts found');
@@ -61,34 +68,14 @@ export function registerListContactsTool(
           };
         }
 
-        // Sort alphabetically by display name
-        const sortedContacts = [...contacts].sort((a, b) => {
-          const nameA = a.name.formatted
-            || [a.name.given, a.name.family].filter(Boolean).join(' ')
-            || '';
-          const nameB = b.name.formatted
-            || [b.name.given, b.name.family].filter(Boolean).join(' ')
-            || '';
-          return nameA.localeCompare(nameB);
-        });
-
-        // Limit to 30 contacts (truncation protection)
-        const truncated = sortedContacts.length > 30;
-        const displayContacts = sortedContacts.slice(0, 30);
-
         // Format as single-line summaries
-        const formattedContacts = displayContacts
+        const formattedContacts = contacts
           .map((contact) => formatContactSummary(contact))
           .join('\n');
 
-        // Add truncation notice if needed
-        const truncationNotice = truncated
-          ? `\n\n(Showing 30 of ${sortedContacts.length} contacts. Use search_contacts to find specific contacts.)`
-          : '';
+        const result = `Contacts (${contacts.length} in this page):\n\n${formattedContacts}${formatContactFooter(nextCursor)}`;
 
-        const result = `Contacts (${displayContacts.length}):\n\n${formattedContacts}${truncationNotice}`;
-
-        logger.info({ total: contacts.length, displayed: displayContacts.length, truncated }, 'Contacts listed');
+        logger.info({ displayed: contacts.length, more: !!nextCursor }, 'Contacts listed');
 
         return {
           content: [

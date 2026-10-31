@@ -6,6 +6,7 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 
 ### Changed
 - Node.js >= 20.3 is required (`AbortSignal.any`).
+- `list_contacts`, `search_contacts` and `get_contact_details` take `limit` (default 30, maximum 100) and `cursor`, and return `nextCursor` while contacts remain.
 - `get_events_in_range`, `get_todays_schedule` and `search_events` take `limit` (default 50, maximum 100) and `cursor`, and return `nextCursor` while events remain, instead of cutting at 50 without saying so.
 - A date range covers 92 days at most, including in `check_availability`. `get_events_in_range` covers the next 7 days without dates.
 - `get_events_in_range` and `search_events` take `start` and `end` in ISO 8601 instead of `when`, and `check_availability` no longer takes natural language: the expressions it read as one day (`this week`, `next month`) are gone.
@@ -24,6 +25,7 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 - `search_events` filters before it cuts, so a match late in the range is found.
 - `get_next_event` widens its search step by step instead of downloading a year.
 - An unknown UID no longer reads every calendar. On Twake Calendar the lookup is one request on the JSON API; on other servers it is a UID query limited to 2 years around today, and the error says so. A UID in several calendars asks for a calendar name.
+- Contact searches and UID lookups are filtered by the server instead of reading the address book, and their output is bounded. On Twake, `list_contacts` pages on the server.
 
 ## [3.1.0] - 2026-10-31
 

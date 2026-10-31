@@ -10,9 +10,11 @@
  * - Multi-addressbook aggregation and transformation
  */
 
+import { z } from 'zod';
 import type { Logger } from 'pino';
+import type { DAVVCard } from 'tsdav';
 import type { ContactDTO } from '../../types/dtos.js';
-import type { AddressBookService } from '../../caldav/addressbook-service.js';
+import type { AddressBookService, ContactCursor } from '../../caldav/addressbook-service.js';
 import { transformVCard } from '../../transformers/contact.js';
 
 /**
@@ -170,42 +172,39 @@ export async function getAllContacts(
   return contacts;
 }
 
+export const DEFAULT_CONTACT_LIMIT = 30;
+
+export const contactPageParams = {
+  limit: z.number().int().min(1).max(100).optional().describe(
+    `Maximum number of contacts to return (default ${DEFAULT_CONTACT_LIMIT}, maximum 100).`
+  ),
+  cursor: z.object({
+    book: z.number().int().min(0),
+    offset: z.number().int().min(0),
+  }).optional().describe('The nextCursor of the previous response. Repeat the same filters with it.'),
+};
+
 /**
- * Resolve which address book(s) to query based on the addressbook parameter and default setting,
- * then fetch and transform contacts.
+ * Which address book to read. "all" and no default mean every address book.
  *
- * Resolution order:
- * 1. addressbookParam provided and != "all" -> fetch from that specific address book
- * 2. addressbookParam === "all" -> fetch from all address books
- * 3. addressbookParam absent + defaultAddressBook set -> fetch from default address book
- * 4. addressbookParam absent + no default -> fetch from all address books
- *
- * @param addressBookService - AddressBook service instance
- * @param addressbookParam - Optional address book name from tool parameter
- * @param defaultAddressBook - Optional default address book name from config
- * @param logger - Pino logger
- * @returns Array of ContactDTOs from resolved address book(s)
+ * @returns The address book name, or undefined for all of them
  */
-export async function resolveAddressBookContacts(
-  addressBookService: AddressBookService,
+export function resolveAddressBookName(
   addressbookParam: string | undefined,
   defaultAddressBook: string | undefined,
-  logger: Logger,
-): Promise<ContactDTO[]> {
-  const target = addressbookParam === 'all' ? undefined : (addressbookParam || defaultAddressBook);
+): string | undefined {
+  return addressbookParam === 'all' ? undefined : (addressbookParam || defaultAddressBook);
+}
 
-  let rawContacts;
-  if (target) {
-    rawContacts = await addressBookService.fetchContactsByAddressBookName(target);
-  } else {
-    rawContacts = await addressBookService.fetchAllContacts();
-  }
-
-  const contacts = rawContacts
+export function toContacts(vcards: DAVVCard[], logger: Logger): ContactDTO[] {
+  return vcards
     .map(vcard => transformVCard(vcard as any, logger))
     .filter((contact): contact is ContactDTO => contact !== null);
+}
 
-  logger.info({ count: contacts.length }, 'Transformed contacts');
-
-  return contacts;
+/** The last lines of a page: the model must never read a page as the whole result. */
+export function formatContactFooter(nextCursor: ContactCursor | null): string {
+  return nextCursor
+    ? `\n\nMore contacts remain. To continue, call again with the same filters and:\nnextCursor: ${JSON.stringify(nextCursor)}`
+    : '\n\nNo more contacts.';
 }
