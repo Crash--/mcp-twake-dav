@@ -13,6 +13,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../caldav/calendar-service.js';
 import type { AddressBookService } from '../caldav/addressbook-service.js';
+import { setApprover } from '../approval.js';
+import { runToolCall } from '../caldav/dav-fetch.js';
 import { registerNextEventTool } from './calendar/next-event.js';
 import { registerTodaysScheduleTool } from './calendar/today.js';
 import { registerDateRangeTool } from './calendar/date-range.js';
@@ -79,8 +81,30 @@ export function registerAllTools(
     DAV_ORGANIZER_EMAIL?: string;
     DAV_ORGANIZER_NAME?: string;
     DAV_RECURRING_WRITES?: 'true' | 'false';
+    DAV_APPROVAL?: 'elicit' | 'client';
+    DAV_APPROVAL_TIMEOUT_MS?: number;
+    USER_LANGUAGE?: string;
   },
 ): void {
+  // Prior approval of every write (MCP elicitation), see src/approval.ts
+  setApprover(server, {
+    mode: config?.DAV_APPROVAL ?? 'elicit',
+    language: (config?.USER_LANGUAGE ?? '').toLowerCase().startsWith('fr') ? 'fr' : 'en',
+    timeoutMs: config?.DAV_APPROVAL_TIMEOUT_MS ?? 600_000,
+    as: config?.DAV_ORGANIZER_NAME || config?.DAV_ORGANIZER_EMAIL || config?.DAV_USERNAME,
+    timeZone: userTimezone,
+  });
+
+  // Every handler gets the client's cancellation on its DAV requests.
+  const registerTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
+  server.tool = ((...args: unknown[]) => {
+    const handler = args.pop() as (...handlerArgs: unknown[]) => { content: unknown[] };
+    return registerTool(...args, (...handlerArgs: unknown[]) => {
+      const { signal } = handlerArgs.at(-1) as { signal: AbortSignal };
+      return runToolCall(signal, () => handler(...handlerArgs));
+    });
+  }) as typeof server.tool;
+
   // Register calendar query tools (Phase 4)
   registerNextEventTool(server, calendarService, logger, defaultCalendar, userTimezone);
   registerTodaysScheduleTool(server, calendarService, logger, defaultCalendar, userTimezone);

@@ -9,6 +9,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { AddressBookService } from '../../caldav/addressbook-service.js';
 import { ConflictError } from '../../errors.js';
+import { approverFor } from '../../approval.js';
 
 /**
  * Register the delete_contact tool
@@ -65,6 +66,16 @@ export function registerDeleteContactTool(
         // Build response message
         const responseText = `Contact deleted successfully: ${contact.name.formatted || 'Unknown'}`;
 
+        const refused = await approverFor(server).gate({
+          action: 'delete_contact',
+          details: [
+            ['contact', contact.name.formatted || 'Unknown'],
+            ['email', contact.emails.join(', ')],
+            ['phone', contact.phones.join(', ')],
+            ['organization', contact.organization],
+          ],
+        });
+        if (refused) return refused;
         // Delete contact using url and etag
         await addressBookService.deleteContact(contact.url, contact.etag);
 

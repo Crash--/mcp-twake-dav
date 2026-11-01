@@ -24,6 +24,9 @@ import {
  * @param calendarService - Calendar service for fetching events
  * @param logger - Pino logger
  */
+/** Matches listed in one answer. */
+const MAX_LISTED = 50;
+
 export function registerSearchEventsTool(
   server: McpServer,
   calendarService: CalendarService,
@@ -100,7 +103,8 @@ export function registerSearchEventsTool(
         );
 
         // Transform and expand recurring events
-        let events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        // filter the whole range first: truncating before filtering hid matches after the 50th event
+        let events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, Number.POSITIVE_INFINITY);
 
         // Apply keyword filter if query provided
         if (params.query) {
@@ -134,6 +138,8 @@ export function registerSearchEventsTool(
         events.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
 
         // Format all events
+        const total = events.length;
+        events = events.slice(0, MAX_LISTED);
         const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
 
         const searchDescription = params.query
@@ -142,7 +148,8 @@ export function registerSearchEventsTool(
             : `keyword "${params.query}"`
           : `attendee "${params.attendee}"`;
 
-        const result = `Found ${events.length} event${events.length === 1 ? '' : 's'} matching ${searchDescription}:\n\n${formattedEvents}`;
+        const shownNote = total > events.length ? ` (the first ${events.length} shown: narrow the date range to see the rest)` : '';
+        const result = `Found ${total} event${total === 1 ? '' : 's'} matching ${searchDescription}${shownNote}:\n\n${formattedEvents}`;
 
         logger.info({ query: params.query, attendee: params.attendee, count: events.length }, 'Search completed');
 

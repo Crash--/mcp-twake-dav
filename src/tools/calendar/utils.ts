@@ -55,9 +55,68 @@ export function getEndOfDay(date: Date): Date {
  * @param expression - Natural language date expression
  * @returns TimeRange with ISO 8601 start/end, or null if parsing fails
  */
-export function parseNaturalDateRange(expression: string): TimeRange | null {
+/**
+ * Whole periods ("next week", "this month", "la semaine prochaine"...). chrono-node reads
+ * them as a single day ("next week" = today + 7 days), so they are handled first.
+ * Weeks run Monday to Sunday.
+ */
+function parsePeriod(expression: string, now: Date): { start: Date; end: Date } | null {
+  const e = expression.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+  // "next 7 days", "the next 2 weeks", "les 10 prochains jours": today and the N-1 days after (chrono
+  // would read "next 7 days" as the single day in 7 days).
+  const ahead =
+    /^(?:the )?(?:next|coming|upcoming) (\d{1,3}) (day|days|week|weeks)$/.exec(e) ??
+    /^(?:(?:dans )?les )?(\d{1,3}) (?:prochains|prochaines) (jours|semaines)$/.exec(e);
+  if (ahead) {
+    const n = Number(ahead[1]) * (/^(week|semaine)/.test(ahead[2]) ? 7 : 1);
+    if (n > 0) {
+      const start = getStartOfDay(now);
+      const last = new Date(start);
+      last.setDate(start.getDate() + n - 1);
+      return { start, end: getEndOfDay(last) };
+    }
+  }
+  const patterns: [RegExp, 'week' | 'month' | 'weekend', number][] = [
+    [/^(this|current) week$|^(cette|la) semaine( en cours)?$/, 'week', 0],
+    [/^next week$|^(la )?semaine prochaine$/, 'week', 1],
+    [/^(last|previous) week$|^(la )?semaine (derniere|passee)$/, 'week', -1],
+    [/^(this|current) month$|^ce mois(-| )?ci$|^(le )?mois en cours$/, 'month', 0],
+    [/^next month$|^(le )?mois prochain$/, 'month', 1],
+    [/^(last|previous) month$|^(le )?mois (dernier|precedent)$/, 'month', -1],
+    [/^(this )?weekend$|^ce (week-end|weekend)$/, 'weekend', 0],
+    [/^next weekend$|^(le )?(week-end|weekend) prochain$/, 'weekend', 1],
+  ];
+  for (const [re, unit, offset] of patterns) {
+    if (!re.test(e)) continue;
+    const today = getStartOfDay(now);
+    if (unit === 'month') {
+      const start = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+      const end = getEndOfDay(new Date(today.getFullYear(), today.getMonth() + offset + 1, 0));
+      return { start, end };
+    }
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - ((today.getDay() + 6) % 7) + 7 * offset);
+    if (unit === 'week') {
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      return { start: monday, end: getEndOfDay(sunday) };
+    }
+    // weekend: Saturday-Sunday of that week; "this weekend" on a Sunday is today's weekend
+    const saturday = new Date(monday);
+    saturday.setDate(monday.getDate() + 5);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    return { start: saturday, end: getEndOfDay(sunday) };
+  }
+  return null;
+}
+
+export function parseNaturalDateRange(expression: string, now: Date = new Date()): TimeRange | null {
+  const period = parsePeriod(expression, now);
+  if (period) return { start: period.start.toISOString(), end: period.end.toISOString() };
+
   // Parse with chrono-node (forwardDate: true for future bias, explicit reference date)
-  const results = chrono.parse(expression, new Date(), { forwardDate: true });
+  const results = chrono.parse(expression, now, { forwardDate: true });
 
   // Return null if chrono couldn't parse the expression
   if (results.length === 0) {
@@ -97,7 +156,20 @@ export function parseNaturalDateRange(expression: string): TimeRange | null {
  * @param userTimezone - Optional user timezone for display (e.g., "Europe/Paris")
  * @returns Formatted time string
  */
+/**
+ * Dates of an all-day span: "Thu, Nov 5" or "Thu, Nov 5 – Sun, Nov 8" (end is exclusive).
+ * All-day dates are local midnights, so they are formatted in the process time zone.
+ */
+export function formatAllDaySpan(start: Date, endExclusive: Date): string {
+  const fmt = (d: Date) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const last = new Date(endExclusive.getTime());
+  last.setDate(last.getDate() - 1);
+  return last.getTime() <= start.getTime() ? fmt(start) : `${fmt(start)} – ${fmt(last)}`;
+}
+
 export function formatEventTime(event: EventDTO, userTimezone?: string): string {
+  if (event.allDay) return `${formatAllDaySpan(event.startDate, event.endDate)} (all day)`;
+
   // Use user timezone if provided, otherwise use system default
   const displayTimezone = userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -240,7 +312,8 @@ export function searchEventsByAttendee(events: EventDTO[], name: string): EventD
 export function getEventsWithRecurrenceExpansion(
   rawEvents: DAVCalendarObject[],
   timeRange: TimeRange,
-  logger: Logger
+  logger: Logger,
+  limit = 50,
 ): EventDTO[] {
   const startDate = new Date(timeRange.start);
   const endDate = new Date(timeRange.end);
@@ -286,12 +359,22 @@ export function getEventsWithRecurrenceExpansion(
         // Calculate event duration for occurrence generation
         const duration = eventDTO.endDate.getTime() - eventDTO.startDate.getTime();
 
-        // Expand recurring event with time range boundaries
+        // Expand recurring event with time range boundaries. Occurrences that started before
+        // the range but are still running inside it count too (multi-day all-day markers,
+        // a meeting already started at the range start).
         const occurrences = expandRecurringEvent(vevent, {
           maxOccurrences: 100,
           maxDate: endDate,
-          startDate: startDate,
+          startDate: new Date(startDate.getTime() - duration),
         });
+        const occurrenceEndOf = (occurrence: Date): Date => {
+          if (!eventDTO.allDay) return new Date(occurrence.getTime() + duration);
+          // calendar days, so a span crossing a DST change still ends at midnight
+          const end = new Date(occurrence.getTime());
+          end.setDate(end.getDate() + Math.round(duration / 86400000));
+          return end;
+        };
+        const overlaps = (start: Date, end: Date) => end > startDate && start < endDate;
 
         // Create EventDTO for each occurrence (preserving original fields, updating dates)
         for (const occurrenceDate of occurrences) {
@@ -317,6 +400,7 @@ export function getEventsWithRecurrenceExpansion(
 
             // For non-cancelled exceptions, use the exception's dates and summary
             const exceptionEvent = details.item;
+            if (!overlaps(details.startDate.toJSDate(), details.endDate.toJSDate())) continue;
             allEvents.push({
               ...eventDTO,
               summary: exceptionEvent.summary || eventDTO.summary,
@@ -328,7 +412,8 @@ export function getEventsWithRecurrenceExpansion(
             });
           } else {
             // Normal occurrence (no exception)
-            const occurrenceEnd = new Date(occurrenceDate.getTime() + duration);
+            const occurrenceEnd = occurrenceEndOf(occurrenceDate);
+            if (!overlaps(occurrenceDate, occurrenceEnd)) continue;
 
             allEvents.push({
               ...eventDTO,
@@ -346,8 +431,8 @@ export function getEventsWithRecurrenceExpansion(
         // Skip this recurring event if expansion fails
       }
     } else {
-      // Non-recurring event: include if startDate falls within time range
-      if (eventDTO.startDate >= startDate && eventDTO.startDate < endDate) {
+      // Non-recurring event: include if it overlaps the time range (a multi-day event started earlier counts)
+      if (eventDTO.endDate > startDate && eventDTO.startDate < endDate) {
         allEvents.push(eventDTO);
       }
     }
@@ -356,13 +441,13 @@ export function getEventsWithRecurrenceExpansion(
   // Sort by startDate ascending
   allEvents.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
 
-  // Limit to 50 events (truncation protection)
-  const limited = allEvents.slice(0, 50);
+  // Limit the number of events (truncation protection for listings; availability needs them all)
+  const limited = allEvents.slice(0, limit);
 
-  if (allEvents.length > 50) {
+  if (allEvents.length > limit) {
     logger.warn(
-      { total: allEvents.length, returned: 50 },
-      'Event results truncated to 50 (safety limit)'
+      { total: allEvents.length, returned: limit },
+      `Event results truncated to ${limit} (safety limit)`
     );
   }
 
@@ -453,10 +538,19 @@ export function mergeBusyPeriods(periods: FreeBusyPeriod[]): FreeBusyPeriod[] {
  * @param logger - Logger for debug/error output
  * @returns Merged array of busy periods
  */
-export function computeBusyPeriods(events: EventDTO[], logger: Logger): FreeBusyPeriod[] {
+export function computeBusyPeriods(
+  events: EventDTO[],
+  logger: Logger,
+  options: { allDayBusy?: boolean } = {},
+): FreeBusyPeriod[] {
   const periods: FreeBusyPeriod[] = [];
 
   for (const event of events) {
+    // All-day events (holidays, trade shows, custody days…) are markers: not busy time unless asked
+    if (event.allDay && !options.allDayBusy) {
+      logger.debug({ uid: event.uid }, 'Skipping all-day event for busy period');
+      continue;
+    }
     try {
       const jcalData = ICAL.parse(event._raw);
       const comp = new ICAL.Component(jcalData);

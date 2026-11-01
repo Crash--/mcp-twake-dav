@@ -11,6 +11,7 @@ import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
 import { buildICalString } from '../../transformers/event-builder.js';
 import * as chrono from 'chrono-node';
+import { approverFor } from '../../approval.js';
 
 /**
  * Register the create_event tool
@@ -138,6 +139,19 @@ export function registerCreateEventTool(
           attendees,
         });
 
+        const refused = await approverFor(server).gate({
+          action: 'create_event',
+          details: [
+            ['calendar', resolvedCalendar],
+            ['title', params.title],
+            ['when', approverFor(server).span(startDate, endDate, Boolean(params.allDay))],
+            ['location', params.location],
+            ['description', params.description],
+            ['recurrence', params.recurrence],
+            ['attendees', approverFor(server).notified(attendees.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)), 'invitation_sent')],
+          ],
+        });
+        if (refused) return refused;
         // Create event
         const result = await calendarService.createEvent(iCalString, resolvedCalendar);
 

@@ -11,6 +11,7 @@ import type { Logger } from 'pino';
 import type { AddressBookService } from '../../caldav/addressbook-service.js';
 import { ConflictError } from '../../errors.js';
 import { updateVCardString } from '../../transformers/contact-builder.js';
+import { approverFor } from '../../approval.js';
 
 /**
  * Register the update_contact tool
@@ -96,6 +97,19 @@ export function registerUpdateContactTool(
         // Apply parse-modify-serialize on _raw
         const updatedVCardString = updateVCardString(contact._raw, changes);
 
+        const refused = await approverFor(server).gate({
+          action: 'update_contact',
+          details: [
+            ['contact', [contact.name.formatted, contact.emails[0]].filter(Boolean).join(' · ')],
+            ['changes', [
+              params.name !== undefined ? `name: ${contact.name.formatted ?? ''} → ${params.name}` : undefined,
+              params.email !== undefined ? `email: ${contact.emails[0] ?? ''} → ${params.email}` : undefined,
+              params.phone !== undefined ? `phone: ${contact.phones[0] ?? ''} → ${params.phone}` : undefined,
+              params.organization !== undefined ? `organization: ${contact.organization ?? ''} → ${params.organization}` : undefined,
+            ].filter(Boolean).join('\n')],
+          ],
+        });
+        if (refused) return refused;
         // Update contact using etag for optimistic concurrency
         await addressBookService.updateContact(contact.url, updatedVCardString, contact.etag!);
 

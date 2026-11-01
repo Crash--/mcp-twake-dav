@@ -4,6 +4,49 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 
 ## [Unreleased]
 
+### Fixed
+- A failing DAV read (401, 413, 429, 500, or an error inside a 207) or an unknown calendar or address book name is an error for the assistant, with its status and what to do. Objects that could not be read are named next to the result, and so is a calendar this account has no access to: the other calendars still answer, and `check_availability` then says availability is unknown.
+- Every DAV request has a 30 second timeout and is cancelled with its tool call. A read is retried only on 429, 503 and network errors, and `Retry-After` is honoured up to 10 seconds.
+- PUT and DELETE are never retried. A write without an answer says that its outcome is unknown and must be checked first.
+
+### Changed
+- Node.js >= 20.3 is required (`AbortSignal.any`).
+- Events and contacts are read with one query that returns the data, without a multiget.
+- `tsdav` is pinned to exactly 2.5.0: the fetch guard and the reads depend on how it works inside, and a published package has no lockfile.
+
+## [4.0.0] - 2026-11-01
+
+### Added
+- Prior approval of every write by the user, asked by the server itself through MCP elicitation (`DAV_APPROVAL=elicit`, the default): `create_event`, `update_event`, `delete_event`, `add_alarm`, `remove_alarm`, `respond_to_invitation`, `create_contact`, `update_contact` and `delete_contact` show the exact action (dates as parsed, current event or contact, attendees who will receive an e-mail, a unique reference) and write only on accept. Prompts in English or French (`USER_LANGUAGE`), `DAV_APPROVAL_TIMEOUT_MS`.
+- `scripts/live-approval.mjs`: live test of the approvals on a real calendar and address book.
+
+### Changed
+- **Breaking**: with an MCP client that does not support elicitation, write tools now return an error and write nothing. Set `DAV_APPROVAL=client` to keep the 3.x behaviour when your client confirms writes itself.
+
+### Fixed
+- "next 7 days", "the next 2 weeks", "les 10 prochains jours" covered a single day (chrono-node reads "next 7 days" as the day in 7 days): they now cover today and the following days.
+
+## [3.3.0] - 2026-11-01
+
+### Fixed
+- `check_availability` marked whole days busy as soon as the range met an all-day event (holiday, trade show, custody days), and a multi-day all-day event swallowed the meetings of the following days: the server free-busy report cannot tell such markers from meetings. Busy periods are now computed from the events, all-day events are listed apart, and periods ending on another day show their date.
+- Events that started before the queried range but overlap it (a multi-day all-day event, a meeting already running, a recurring occurrence) were dropped by every read tool.
+- `search_events` truncated the events to 50 before filtering by keyword, so matches beyond the first 50 events of the range were never found; `get_events_in_range` truncated silently. Both now work on the whole range and say when only the first 50 are shown.
+- `check_availability` with `calendar: "all"` only queried the first calendar.
+
+### Added
+- `check_availability` `all_day_busy` option (count all-day events as busy).
+- All-day events are shown as dates (`Thu, Nov 5 – Sun, Nov 8 (all day)`) instead of `12:00 AM - 12:00 AM`.
+
+## [3.2.0] - 2026-11-01
+
+### Fixed
+- `get_events_in_range` with a period ("next week", "this week", "next month", "next weekend", and the French forms "la semaine prochaine", "ce mois-ci"…) returned a single day (chrono-node reads "next week" as today + 7 days), often an empty one. Periods now cover the whole week (Monday to Sunday), month or weekend.
+- With tsdav 2.5 (native fetch, no cross-fetch), `DAV_HREF_PREFIX` rewriting goes through tsdav's `fetch` option: the previous cross-fetch patch made the server fail at startup.
+
+### Changed
+- Dependencies: tsdav 2.5, @modelcontextprotocol/sdk 1.32, zod 4.6, chrono-node 2.10, TypeScript 7, vitest 5; CI actions v7.
+
 ## [3.1.0] - 2026-10-31
 
 ### Added

@@ -16,7 +16,8 @@ import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { discoverCalendars, discoverSchedulingInbox } from './discovery.js';
 import { randomUUID } from 'node:crypto';
-import { ConflictError } from '../errors.js';
+import { ConflictError, DavHttpError, isDavUnsupported } from '../errors.js';
+import { addReadWarning, hasPartialRead } from './dav-fetch.js';
 import { transformCalendarObject } from '../transformers/event.js';
 import { transformInvitation, type InboxResponse } from '../transformers/invitation.js';
 import { updateAttendeePartstat } from '../transformers/event-builder.js';
@@ -211,7 +212,7 @@ export class CalendarService {
     );
 
     // Cache the results (only for full fetches, not time-range queries)
-    this.objectCache.set(calendar.url, calendar.ctag ?? '', objects);
+    if (!hasPartialRead()) this.objectCache.set(calendar.url, calendar.ctag ?? '', objects);
 
     this.logger.info(
       { url: calendar.url, count: objects.length, cached: true },
@@ -225,11 +226,11 @@ export class CalendarService {
    * Fetch events from a single calendar identified by display name (case-insensitive)
    *
    * Looks up the calendar by displayName among all discovered calendars.
-   * If no match is found, logs a warning and returns an empty array.
    *
    * @param name - Calendar display name to match (case-insensitive)
    * @param timeRange - Optional ISO 8601 time range for server-side filtering
-   * @returns Array of DAVCalendarObject from the matched calendar, or empty if not found
+   * @returns Array of DAVCalendarObject from the matched calendar
+   * @throws Error if no calendar has this name
    */
   async fetchEventsByCalendarName(name: string, timeRange?: TimeRange): Promise<DAVCalendarObject[]> {
     await this.listCalendars();
@@ -237,10 +238,9 @@ export class CalendarService {
       (cal) => (String(cal.displayName || '')).toLowerCase() === name.toLowerCase()
     );
     if (!match) {
-      this.logger.warn({ calendarName: name }, 'Calendar not found, returning empty');
-      return [];
+      throw new Error(`Calendar "${name}" not found.\n\nFix: Use list_calendars to see the available names.`);
     }
-    return this.fetchEvents(match, timeRange);
+    return this.fetchEventsFrom([match], timeRange);
   }
 
   /**
@@ -257,13 +257,7 @@ export class CalendarService {
     // Ensure calendars are loaded
     await this.listCalendars();
 
-    // Fetch from all calendars in parallel
-    const results = await Promise.all(
-      this.calendars.map((cal) => this.fetchEvents(cal, timeRange))
-    );
-
-    // Flatten results
-    const flattened = results.flat();
+    const flattened = await this.fetchEventsFrom(this.calendars, timeRange);
 
     this.logger.info(
       { calendarCount: this.calendars.length, totalObjects: flattened.length },
@@ -271,6 +265,32 @@ export class CalendarService {
     );
 
     return flattened;
+  }
+
+  /**
+   * Fetch events from these calendars in parallel. One without read rights must not
+   * hide the others: it is named next to the result, and in the error if all refuse.
+   */
+  async fetchEventsFrom(calendars: DAVCalendar[], timeRange?: TimeRange): Promise<DAVCalendarObject[]> {
+    const refused: string[] = [];
+    const results = await Promise.all(
+      calendars.map(async (cal) => {
+        try {
+          return await this.fetchEvents(cal, timeRange);
+        } catch (err) {
+          if (!(err instanceof DavHttpError) || err.status !== 403) throw err;
+          refused.push(`"${String(cal.displayName || cal.url)}"`);
+          return [];
+        }
+      })
+    );
+    if (refused.length === calendars.length && refused.length > 0) {
+      throw new DavHttpError(403, null, `on the calendar ${refused.join(', ')}`);
+    }
+    for (const name of refused) {
+      addReadWarning(`The calendar ${name} could not be read: this account has no read access to it (HTTP 403).`);
+    }
+    return results.flat();
   }
 
   /**
@@ -305,15 +325,12 @@ export class CalendarService {
     // Generate filename
     const filename = `${randomUUID()}.ics`;
 
-    // Call tsdav createCalendarObject with retry
-    const response = await withRetry(
-      () => this.client.createCalendarObject({
-        calendar: targetCalendar,
-        iCalString,
-        filename,
-      }),
-      this.logger
-    );
+    // No retry: after a cut, the first write may have been applied and a second turns that into a failure.
+    const response = await this.client.createCalendarObject({
+      calendar: targetCalendar,
+      iCalString,
+      filename,
+    });
 
     // Check response
     if (!response.ok) {
@@ -355,17 +372,14 @@ export class CalendarService {
     iCalString: string,
     etag: string
   ): Promise<{ etag: string | undefined }> {
-    // Call tsdav updateCalendarObject with retry
-    const response = await withRetry(
-      () => this.client.updateCalendarObject({
-        calendarObject: {
-          url,
-          data: iCalString,
-          etag,
-        },
-      }),
-      this.logger
-    );
+    // No retry: see createEvent
+    const response = await this.client.updateCalendarObject({
+      calendarObject: {
+        url,
+        data: iCalString,
+        etag,
+      },
+    });
 
     // Check response
     if (!response.ok) {
@@ -422,16 +436,13 @@ export class CalendarService {
       resolvedEtag = matchingObject.etag;
     }
 
-    // Call tsdav deleteCalendarObject with retry
-    const response = await withRetry(
-      () => this.client.deleteCalendarObject({
-        calendarObject: {
-          url,
-          etag: resolvedEtag!,
-        },
-      }),
-      this.logger
-    );
+    // No retry: see createEvent
+    const response = await this.client.deleteCalendarObject({
+      calendarObject: {
+        url,
+        etag: resolvedEtag!,
+      },
+    });
 
     // Check response
     if (!response.ok) {
@@ -483,7 +494,7 @@ export class CalendarService {
       ];
       for (const calendar of targets) {
         const objects = await withRetry(
-          () => this.client.fetchCalendarObjects({ calendar, filters, useMultiGet: false } as any),
+          () => this.client.fetchCalendarObjects({ calendar, filters } as any),
           this.logger
         );
         for (const obj of objects) {
@@ -496,7 +507,11 @@ export class CalendarService {
         }
       }
     } catch (err) {
-      this.logger.warn({ err, uid }, 'Server-side UID lookup failed, falling back to full scan');
+      if (isDavUnsupported(err)) {
+        this.logger.warn({ err, uid }, 'Server-side UID lookup not supported, falling back to full scan');
+      } else {
+        throw err;
+      }
     }
 
     // 2. Fallback: fetch raw calendar objects
@@ -617,53 +632,47 @@ export class CalendarService {
       },
     };
 
-    try {
-      // Execute calendar-query REPORT with retry
-      const responses = await withRetry(
-        () => this.client.calendarQuery({
-          url: inboxUrl,
-          props: queryProps,
-          depth: '1',
-        }),
-        this.logger
-      );
+    // Execute calendar-query REPORT with retry
+    const responses = await withRetry(
+      () => this.client.calendarQuery({
+        url: inboxUrl,
+        props: queryProps,
+        depth: '1',
+      }),
+      this.logger
+    );
 
-      this.logger.debug({ count: responses.length }, 'Received inbox query responses');
+    this.logger.debug({ count: responses.length }, 'Received inbox query responses');
 
-      // Transform responses to InvitationDTOs
-      const invitations: InvitationDTO[] = [];
-      for (const resp of responses) {
-        // Cast response to InboxResponse type
-        const inboxResp: InboxResponse = {
-          href: resp.href || '',
-          props: {
-            getetag: resp.props?.getetag as string | undefined,
-            calendarData: resp.props?.calendarData as string | undefined,
-          },
-        };
+    // Transform responses to InvitationDTOs
+    const invitations: InvitationDTO[] = [];
+    for (const resp of responses) {
+      // Cast response to InboxResponse type
+      const inboxResp: InboxResponse = {
+        href: resp.href || '',
+        props: {
+          getetag: resp.props?.getetag as string | undefined,
+          calendarData: resp.props?.calendarData as string | undefined,
+        },
+      };
 
-        const invitation = transformInvitation(inboxResp, userEmail, this.logger);
-        if (invitation) {
-          // Apply time range filter if provided (client-side since not all servers support it)
-          if (timeRange) {
-            const start = new Date(timeRange.start);
-            const end = new Date(timeRange.end);
-            if (invitation.proposedStart >= start && invitation.proposedEnd <= end) {
-              invitations.push(invitation);
-            }
-          } else {
+      const invitation = transformInvitation(inboxResp, userEmail, this.logger);
+      if (invitation) {
+        // Apply time range filter if provided (client-side since not all servers support it)
+        if (timeRange) {
+          const start = new Date(timeRange.start);
+          const end = new Date(timeRange.end);
+          if (invitation.proposedStart >= start && invitation.proposedEnd <= end) {
             invitations.push(invitation);
           }
+        } else {
+          invitations.push(invitation);
         }
       }
-
-      this.logger.info({ count: invitations.length }, 'Found pending invitations');
-      return invitations;
-    } catch (err) {
-      // Log error but don't crash - return empty list for graceful degradation
-      this.logger.error({ err, inboxUrl }, 'Failed to query scheduling inbox');
-      return [];
     }
+
+    this.logger.info({ count: invitations.length }, 'Found pending invitations');
+    return invitations;
   }
 
   /**
@@ -695,17 +704,14 @@ export class CalendarService {
     // Update PARTSTAT in iCalendar using helper function
     const updatedIcal = updateAttendeePartstat(rawIcal, attendeeEmail, response);
 
-    // PUT to inbox URL with ETag for optimistic concurrency
-    const httpResponse = await withRetry(
-      () => this.client.updateCalendarObject({
-        calendarObject: {
-          url: invitationUrl,
-          data: updatedIcal,
-          etag,
-        },
-      }),
-      this.logger
-    );
+    // PUT to inbox URL with ETag for optimistic concurrency. No retry: see createEvent
+    const httpResponse = await this.client.updateCalendarObject({
+      calendarObject: {
+        url: invitationUrl,
+        data: updatedIcal,
+        etag,
+      },
+    });
 
     // Check response status
     if (!httpResponse.ok) {

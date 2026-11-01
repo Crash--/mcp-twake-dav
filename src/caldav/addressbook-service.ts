@@ -16,6 +16,7 @@ import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { discoverAddressBooks } from './discovery.js';
 import { ConflictError } from '../errors.js';
+import { hasPartialRead } from './dav-fetch.js';
 import { transformVCard } from '../transformers/contact.js';
 import type { ContactDTO } from '../types/dtos.js';
 
@@ -108,8 +109,7 @@ export class AddressBookService {
   /**
    * Fetch contacts from a single address book
    *
-   * Uses CTag-based caching to avoid unnecessary re-fetches. Falls back to
-   * useMultiGet=false if initial fetch returns empty (SabreDAV compatibility).
+   * Uses CTag-based caching to avoid unnecessary re-fetches.
    *
    * @param addressBook - Address book to fetch contacts from
    * @returns Array of DAVVCard objects (url, etag, data fields)
@@ -140,24 +140,13 @@ export class AddressBookService {
       );
     }
 
-    // Fetch with retry
-    let vcards = await withRetry(
+    const vcards = await withRetry(
       () => this.client.fetchVCards({ addressBook }),
       this.logger
     );
 
-    // IMPORTANT FALLBACK (Research Pitfall 5): If vcards is empty, retry without multiGet
-    // Some SabreDAV configurations don't support addressbook-multiget REPORT
-    if (vcards.length === 0) {
-      this.logger.info({ url: addressBook.url }, 'fetchVCards returned empty, retrying without multiGet');
-      vcards = await withRetry(
-        () => this.client.fetchVCards({ addressBook, useMultiGet: false }),
-        this.logger
-      );
-    }
-
     // Update cache
-    this.objectCache.set(addressBook.url, addressBook.ctag ?? '', vcards);
+    if (!hasPartialRead()) this.objectCache.set(addressBook.url, addressBook.ctag ?? '', vcards);
 
     this.logger.info({ url: addressBook.url, count: vcards.length }, 'Fetched address book contacts');
 
@@ -168,10 +157,10 @@ export class AddressBookService {
    * Fetch contacts from a single address book identified by display name (case-insensitive)
    *
    * Looks up the address book by displayName among all discovered address books.
-   * If no match is found, logs a warning and returns an empty array.
    *
    * @param name - Address book display name to match (case-insensitive)
-   * @returns Array of DAVVCard from the matched address book, or empty if not found
+   * @returns Array of DAVVCard from the matched address book
+   * @throws Error if no address book has this name
    */
   async fetchContactsByAddressBookName(name: string): Promise<DAVVCard[]> {
     await this.listAddressBooks();
@@ -179,8 +168,7 @@ export class AddressBookService {
       (ab) => getAddressBookName(ab).toLowerCase() === name.toLowerCase()
     );
     if (!match) {
-      this.logger.warn({ addressBookName: name }, 'Address book not found, returning empty');
-      return [];
+      throw new Error(`Address book "${name}" not found.\n\nFix: Use list_addressbooks to see the available names.`);
     }
     return this.fetchContacts(match);
   }
@@ -250,15 +238,12 @@ export class AddressBookService {
     // Generate unique filename
     const filename = `${randomUUID()}.vcf`;
 
-    // Create vCard with retry
-    const response = await withRetry(
-      () => this.client.createVCard({
-        addressBook: targetAddressBook,
-        vCardString,
-        filename,
-      }),
-      this.logger
-    );
+    // No retry: after a cut, the first write may have been applied and a second turns that into a failure.
+    const response = await this.client.createVCard({
+      addressBook: targetAddressBook,
+      vCardString,
+      filename,
+    });
 
     // Check response status
     if (!response.ok) {
@@ -303,13 +288,10 @@ export class AddressBookService {
     vCardString: string,
     etag: string
   ): Promise<{ etag: string | undefined }> {
-    // Update vCard with retry
-    const response = await withRetry(
-      () => this.client.updateVCard({
-        vCard: { url, data: vCardString, etag },
-      }),
-      this.logger
-    );
+    // No retry: see createContact
+    const response = await this.client.updateVCard({
+      vCard: { url, data: vCardString, etag },
+    });
 
     // Check response status
     if (!response.ok) {
@@ -367,13 +349,10 @@ export class AddressBookService {
       resolvedEtag = match.etag;
     }
 
-    // Delete vCard with retry
-    const response = await withRetry(
-      () => this.client.deleteVCard({
-        vCard: { url, etag: resolvedEtag },
-      }),
-      this.logger
-    );
+    // No retry: see createContact
+    const response = await this.client.deleteVCard({
+      vCard: { url, etag: resolvedEtag },
+    });
 
     // Check response status
     if (!response.ok) {

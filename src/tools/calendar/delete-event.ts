@@ -11,6 +11,7 @@ import * as chrono from 'chrono-node';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
 import { addExdateToEvent } from '../../transformers/event-builder.js';
+import { approverFor } from '../../approval.js';
 
 
 /** True when the event is a recurring series or an occurrence of one. */
@@ -126,6 +127,15 @@ export function registerDeleteEventTool(
           // Add EXDATE to master event (does NOT delete the resource)
           const updatedRaw = addExdateToEvent(event._raw, parsedInstanceDate);
 
+          const refused = await approverFor(server).gate({
+            action: 'delete_occurrence',
+            details: [
+              ['event', approverFor(server).eventLine(event)],
+              ['occurrence', approverFor(server).date(parsedInstanceDate, event.allDay)],
+              ['notified', approverFor(server).notified(event.attendees, 'cancel_sent')],
+            ],
+          });
+          if (refused) return refused;
           // Update event using calendarService.updateEvent (not deleteEvent!)
           await calendarService.updateEvent(event.url, updatedRaw, event.etag!);
 
@@ -148,6 +158,15 @@ export function registerDeleteEventTool(
           responseText += `\n\nWarning: This event has attendees (${attendeeList}). The server may send cancellation emails to all attendees.`;
         }
 
+        const refused = await approverFor(server).gate({
+          action: 'delete_event',
+          details: [
+            ['event', approverFor(server).eventLine(event)],
+            ['recurrence', event.isRecurring ? event.recurrenceRule : undefined],
+            ['notified', approverFor(server).notified(event.attendees, 'cancel_sent')],
+          ],
+        });
+        if (refused) return refused;
         // Delete event using url and etag
         await calendarService.deleteEvent(event.url, event.etag);
 

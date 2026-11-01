@@ -62,6 +62,12 @@ export interface EventDTO {
   /** True if event has RRULE property (recurring event) */
   isRecurring: boolean;
 
+  /**
+   * True for all-day events (date-valued DTSTART). Their startDate/endDate are local
+   * midnights and endDate is exclusive (the day after the last day).
+   */
+  allDay: boolean;
+
   /** Raw RRULE string if event is recurring */
   recurrenceRule: string | undefined;
 

@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/mcp-twake-dav)](https://www.npmjs.com/package/mcp-twake-dav)
 [![CI](https://github.com/linagora/mcp-twake-dav/actions/workflows/ci.yml/badge.svg)](https://github.com/linagora/mcp-twake-dav/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
+[![Node.js >= 20.3](https://img.shields.io/badge/node-%3E%3D20.3-brightgreen.svg)](https://nodejs.org/)
 
 **Give your AI assistant secure access to Twake Calendar and your contacts, in the [Twake.ai](https://twake.ai) Digital Workplace.**
 
@@ -17,22 +17,24 @@ It speaks the open standards **CalDAV** ([RFC 4791](https://www.rfc-editor.org/r
 
 ## Part of Twake.ai
 
-[Twake.ai](https://twake.ai) is the truly open source and sovereign Digital Workplace developed by [LINAGORA](https://linagora.com): Twake Mail, Twake Calendar, Twake Drive, Twake Chat and Twake Visio with a single account, hosted in France or on your own infrastructure.
+[Twake.ai](https://twake.ai) is the truly open source and sovereign Digital Workplace developed by [LINAGORA](https://linagora.com): Twake Mail, Twake Calendar, Twake Drive, Twake Chat, Twake Space and Twake Visio with a single account, hosted in France or on your own infrastructure.
 
-Three open source MCP servers connect AI assistants to the whole workplace:
+Five open source MCP servers connect AI assistants to the whole workplace:
 
 | MCP server | Twake.ai service | Protocol |
 |---|---|---|
 | [mcp-twake-mail](https://github.com/linagora/mcp-twake-mail) | Twake Mail | JMAP |
 | **mcp-twake-dav** (this project) | Twake Calendar and contacts | CalDAV / CardDAV |
 | [mcp-twake-drive](https://github.com/linagora/mcp-twake-drive) | Twake Drive | cozy-stack API |
+| [mcp-twake-chat](https://github.com/linagora/mcp-twake-chat) | Twake Chat | Matrix |
+| [mcp-twake-space](https://github.com/linagora/mcp-twake-space) | Twake Space (team spaces) | Twake Space API |
 
-Used together, they let one assistant prepare a meeting from the invitation, the related email thread and the documents in the drive, without your data leaving your servers.
+Used together, they let one assistant prepare a meeting from the invitation, the related email thread, the chat discussion and the documents in the drive, without your data leaving your servers.
 
 ## What it brings
 
 - **Your day at a glance**: "What's on my agenda today? Where is my 3 pm meeting?"
-- **Finding a slot**: "When am I free for one hour with Marie next week?"
+- **Finding a slot**: "When am I free for one hour with Marie next week?" Busy periods come from the events themselves; all-day events (holidays, trade shows, days off) are listed apart instead of blocking whole days.
 - **Scheduling in natural language**: "Book a project review on Tuesday at 10 with Pierre and Marie" (dates like "next Monday" or "in two weeks" are understood).
 - **Reminders and invitations**: add or remove reminders, list pending invitations and answer them.
 - **Contacts**: find an email address or a phone number, create and update contact cards.
@@ -50,7 +52,9 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 | Contacts, read | `search_contacts`, `get_contact_details`, `list_contacts`, `list_addressbooks` |
 | Contacts, write | `create_contact`, `update_contact`, `delete_contact` ⚠️ |
 
-⚠️ = deletes data or makes the server notify other people. Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) so clients can ask for confirmation.
+⚠️ = deletes data or makes the server notify other people. Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`).
+
+**Every write is approved by you first.** Before `create_event`, `update_event`, `delete_event`, `add_alarm`, `remove_alarm`, `respond_to_invitation`, `create_contact`, `update_contact` or `delete_contact` writes anything, the server itself shows you the exact action through MCP elicitation (see [Prior approval](#prior-approval)) and acts only on your explicit OK.
 
 ### Highlights
 
@@ -58,13 +62,14 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 - **Recurring events**: RRULE expansion with safety limits, single-occurrence edits and deletions, and an opt-out (`DAV_RECURRING_WRITES=false`) for cautious deployments.
 - **Reliable updates**: events are found by UID with a server-side query; updates use parse-modify-serialize, so alarms, attendees and `X-` properties are preserved.
 - **Status display**: cancelled and tentative events, attendee participation status.
+- **Visible failures**: a DAV read that fails or times out (30 seconds), including an error inside a 207, is reported to the assistant as an error, not as an empty result. Objects that could not be read are named next to the result. Cancelling a tool call cancels its requests. A read is retried only on 429, 503 and network errors, `Retry-After` honoured up to 10 seconds. A write is never retried: without an answer, the assistant is told its outcome is unknown.
 - **Five authentication methods**: Basic, Bearer, OpenPaaS ESNToken, **token command** (short-lived tokens refreshed before every call) and an external credentials file.
 - **Reverse proxy support**: `DAV_HREF_PREFIX` for servers published under a path prefix that their responses omit (Twake Calendar / OpenPaaS).
 - CTag-based caching, retries with backoff, natural-language dates ([chrono-node](https://github.com/wanasit/chrono)), HTTPS enforced.
 
 ## Requirements
 
-- **Node.js** >= 20
+- **Node.js** >= 20.3
 - A **CalDAV / CardDAV server**: Twake Calendar, Nextcloud, SOGo, DAViCal, ownCloud… (HTTPS required, except `localhost`)
 - An **MCP client**: Claude Desktop, Claude Code, Hermes Agent, Cursor, VS Code, or any MCP-compatible assistant
 
@@ -119,7 +124,28 @@ The server is configured through environment variables, usually set in your MCP 
 | `DAV_RECURRING_WRITES` | `false` = `update_event` / `delete_event` refuse recurring series and occurrences | `true` |
 | `DAV_HREF_PREFIX` | Path prefix stripped by a reverse proxy, e.g. `/dav` for Twake Calendar / OpenPaaS | none |
 | `USER_TIMEZONE` | IANA time zone used to display and interpret dates, e.g. `Europe/Paris` | system time zone |
+| `DAV_APPROVAL` | `elicit`: the server asks you before every write; `client`: your MCP client confirms | `elicit` |
+| `DAV_APPROVAL_TIMEOUT_MS` | How long an approval prompt waits for your answer | `600000` |
+| `USER_LANGUAGE` | Language of the approval prompts, `en` or `fr` | `en` |
 | `LOG_LEVEL` | `fatal`, `error`, `warn`, `info`, `debug`, `trace` | `info` |
+
+### Prior approval
+
+With `DAV_APPROVAL=elicit` (the default), every write tool sends the MCP client an [elicitation](https://modelcontextprotocol.io/specification/draft/client/elicitation) request before it writes, for instance:
+
+```
+Twake Calendar: Delete an event (cannot be undone)
+As: Jane DOE (your account)
+Event: Budget review · 2026-11-05 14:00 → 15:00 (Europe/Paris)
+Notified: Bob DURAND (the server may send them a cancellation)
+
+Ref. 3f9a1c · Accept to do it now, refuse to cancel.
+```
+
+- The prompt shows the dates as the server understood them, the event being changed, the attendees who will receive an e-mail, and the contact's current values.
+- The server writes only on *accept*. A refusal, a dismissal, a timeout (`DAV_APPROVAL_TIMEOUT_MS`, 10 minutes) or an error writes nothing, and the tool tells the assistant not to retry.
+- A client without elicitation support gets an error and nothing is written. Set `DAV_APPROVAL=client` only if your MCP client asks you to confirm every write tool itself.
+- `USER_LANGUAGE=fr` writes the prompts in French.
 
 ### Twake Calendar
 
@@ -185,7 +211,15 @@ mcp_servers:
       DAV_TOKEN_COMMAND: /usr/local/bin/my-token-broker token
       DAV_ORGANIZER_EMAIL: jane.doe@example.com
       DAV_RECURRING_WRITES: "false"
+      DAV_APPROVAL_TIMEOUT_MS: "330000"
+      USER_LANGUAGE: fr
+    timeout: 420            # longer than the approval wait
+    elicitation:
+      enabled: true
+      timeout: 300
 ```
+
+Hermes shows the approval prompts in the desktop app, the terminal or on your messaging platform, and declines them where nobody can answer (cron jobs, one-shot queries).
 
 ### Other MCP clients
 
@@ -195,7 +229,7 @@ Any client that can launch a stdio MCP server works: command `npx`, arguments `-
 
 Creating, moving or deleting an event with attendees makes the server **email them in your name**, and contact deletion is final (CardDAV has no trash). For an assistant that acts on its own:
 
-- ask it to confirm the recap (title, date, place, attendees) before `create_event`, `update_event` or `delete_event`;
+- keep `DAV_APPROVAL=elicit` (the default): every write waits for your OK on the exact action, whatever the assistant decides;
 - set `DAV_RECURRING_WRITES=false` and edit recurring series in Twake Calendar;
 - filter out `respond_to_invitation` (and `delete_contact` if not needed) in your MCP client, for example with Hermes Agent:
 
@@ -221,6 +255,8 @@ Event descriptions and contact notes may be written by third parties (prompt inj
 | Symptom | Fix |
 |---|---|
 | `Configuration validation failed` | Set the variables required by your `DAV_AUTH_METHOD` (see *Authentication*). |
+| `Not done: this MCP client cannot ask the user for approval` | Your MCP client does not support elicitation: use one that does, or `DAV_APPROVAL=client` if it confirms writes itself. |
+| `Not done: no answer to the approval request` | The prompt timed out or nobody could answer (cron, one-shot query): nothing was written. |
 | `401 Unauthorized` | Check the credentials; with a token, check that it is valid and not expired. |
 | `URL must use HTTPS` | Use `https://` (HTTP is only accepted for `localhost` / `127.0.0.1`). |
 | `cannot find homeUrl` / empty calendars | The server sits behind a path prefix: set `DAV_HREF_PREFIX` (e.g. `/dav`). |

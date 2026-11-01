@@ -8,7 +8,8 @@ Security fixes are released for the latest minor version.
 
 | Version | Supported |
 |---|---|
-| 3.1.x | ✅ |
+| 4.x | ✅ |
+| 3.x | ❌ |
 | older | ❌ |
 
 ## Reporting a vulnerability
@@ -34,7 +35,8 @@ We will acknowledge your report within **5 business days**, keep you informed of
 An MCP server acts **with the full rights of the account it is configured with**. Keep these points in mind:
 
 - **Credentials**: `DAV_PASSWORD` and `DAV_TOKEN` are secrets. Prefer `DAV_CREDENTIALS_FILE` (kept out of the MCP client configuration) or `DAV_AUTH_METHOD=command` (short-lived tokens from a broker you control).
-- **Invitations sent by the server**: creating, updating or deleting an event with attendees makes the CalDAV server email invitations or cancellations in the user's name. MCP clients should confirm these actions; `respond_to_invitation` can be filtered out.
+- **Prior approval**: with `DAV_APPROVAL=elicit` (the default), the server asks the user, through MCP elicitation, to approve every write before doing it, with the exact action, the dates as parsed, the attendees who will be notified and a unique reference. It fails closed: refusal, timeout, error or a client without elicitation means nothing is written. `DAV_APPROVAL=client` hands this to the MCP client and should only be used with a client that confirms every write.
+- **Invitations sent by the server**: creating, updating or deleting an event with attendees makes the CalDAV server email invitations or cancellations in the user's name; the approval prompt names them.
 - **Recurring events**: set `DAV_RECURRING_WRITES=false` to make `update_event` / `delete_event` refuse recurring series and occurrences.
 - **Contacts are final**: CardDAV has no trash; `delete_contact` is irreversible.
 - **Prompt injection**: event descriptions and contact notes may be written by third parties; treat them as untrusted content.

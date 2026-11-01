@@ -62,6 +62,8 @@ async function testConnection(
     DAV_DEFAULT_CALENDAR: undefined,
     DAV_DEFAULT_ADDRESSBOOK: undefined,
     DAV_RECURRING_WRITES: 'true',
+    DAV_APPROVAL: 'elicit',
+    DAV_APPROVAL_TIMEOUT_MS: 600000,
   };
 
   // Dynamic imports to avoid loading tsdav/pino at CLI startup
