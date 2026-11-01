@@ -135,6 +135,17 @@ function checkReadBody(method: string, url: string, requestBody: string, status:
   if (method === 'REPORT') checkMultiStatus(url, requestBody, status, text);
 }
 
+/**
+ * Whether a GET on a .json URL shows the JSON API of esn-sabre. Only what proves its
+ * absence says no: a refusal or a limit says nothing, and the answer is kept for the process.
+ */
+export function answersJson(response: Response): boolean {
+  if ([401, 403, 429].includes(response.status) || response.status >= 500) {
+    throw new DavHttpError(response.status, response.headers.get('retry-after'));
+  }
+  return response.ok && /json/i.test(response.headers.get('content-type') ?? '');
+}
+
 export const guardedFetch: typeof fetch = async (input, init) => {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const signals = [timeout, toolCall.getStore()?.signal, init?.signal].filter((s): s is AbortSignal => !!s);
@@ -154,14 +165,16 @@ export const guardedFetch: typeof fetch = async (input, init) => {
     if (response.status >= 400 && !isReportSet) {
       throw new DavHttpError(response.status, response.headers.get('retry-after'));
     }
-    if (response.ok && !isReportSet) {
+    // Our JSON API requests ask for JSON, and hold no multi-status to read.
+    const asksJson = (init?.headers as Record<string, string> | undefined)?.accept === 'application/json';
+    if (response.ok && !isReportSet && !asksJson) {
       checkReadBody(method, url, requestBody, response.status, response.headers.get('content-type') ?? '', text);
     }
     const headers = new Headers(response.headers);
     headers.delete('content-length');
     headers.delete('content-encoding');
     // A Response refuses a body on some statuses, even an empty one.
-    const body = method === 'REPORT' && response.ok ? withoutFailedObjects(text) : text;
+    const body = method === 'REPORT' && response.ok && !asksJson ? withoutFailedObjects(text) : text;
     return new Response(body || null, { status: response.status, statusText: response.statusText, headers });
   } catch (err) {
     if (isWrite && (err as Error).name !== 'AbortError') throw new DavWriteUnknownError(err);

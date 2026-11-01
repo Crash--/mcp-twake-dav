@@ -23,6 +23,7 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 - An event appears in every range it overlaps, including an occurrence moved from another date.
 - `search_events` filters before it cuts, so a match late in the range is found.
 - `get_next_event` widens its search step by step instead of downloading a year.
+- An unknown UID no longer reads every calendar. On Twake Calendar the lookup is one request on the JSON API; on other servers it is a UID query limited to 2 years around today, and the error says so. A UID in several calendars asks for a calendar name.
 
 ## [3.1.0] - 2026-10-31
 

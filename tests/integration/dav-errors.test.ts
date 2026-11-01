@@ -328,32 +328,6 @@ describe('DAV failures reach the model', () => {
     });
   });
 
-  describe('findEventByUid', () => {
-    const raw = (req: { body: string }) => calendarObjects(req.body.includes('calendar-data') ? [{ href: objectHref, ical }] : []);
-
-    it('falls back on a server refusing the UID filter', async () => {
-      dav.handler = (req) => {
-        if (req.method === 'DELETE') return { status: 204 };
-        if (req.method !== 'REPORT') return null;
-        return req.body.includes('name="UID"') ? { status: 400 } : eventsAnswer(req);
-      };
-      const result = await client.callTool({ name: 'delete_event', arguments: { uid: 'a' } });
-      expect(dav.requests.some((r) => r.method === 'DELETE')).toBe(true);
-      expect(text(result)).not.toContain('not found with UID');
-    });
-
-    it('does not fall back on a server failing on it', async () => {
-      dav.handler = (req) => {
-        if (req.method !== 'REPORT') return null;
-        return req.body.includes('name="UID"') ? { status: 500 } : raw(req);
-      };
-      const result = await client.callTool({ name: 'delete_event', arguments: { uid: 'a' } });
-      expect(result.isError).toBe(true);
-      expect(text(result)).toContain('HTTP 500');
-      expect(dav.requests.filter((r) => r.method === 'REPORT')).toHaveLength(1);
-    });
-  });
-
   it('starts when a calendar refuses supported-report-set', async () => {
     const twoCalendars = await startFakeDav(['Perso', 'Restricted']);
     twoCalendars.handler = (req) =>

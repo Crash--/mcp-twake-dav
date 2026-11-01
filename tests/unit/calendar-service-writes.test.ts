@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import pino from 'pino';
 import { CalendarService } from '../../src/caldav/calendar-service.js';
-import { ConflictError } from '../../src/errors.js';
+import { ConflictError, DavHttpError } from '../../src/errors.js';
 import type { DAVCalendar, DAVClient } from 'tsdav';
 import type { Config } from '../../src/config/schema.js';
 
@@ -262,6 +262,10 @@ DTEND:20250316T150000Z\r
 END:VEVENT\r
 END:VCALENDAR`;
 
+    beforeEach(() => {
+      (service as any).hasJsonApi = false;
+    });
+
     it('finds event by UID across all calendars', async () => {
       mockClient.fetchCalendarObjects.mockResolvedValue([
         { url: 'https://dav.example.com/cal/default/event-1.ics', data: testICalData, etag: '"etag-1"' },
@@ -278,14 +282,26 @@ END:VCALENDAR`;
       expect(result?.url).toBe('https://dav.example.com/cal/default/event-1.ics');
     });
 
-    it('returns null when UID not found', async () => {
+    it('says how far it looked when UID not found, without reading whole calendars', async () => {
       mockClient.fetchCalendarObjects.mockResolvedValue([
         { url: 'https://dav.example.com/cal/default/event-1.ics', data: otherICalData, etag: '"etag-1"' },
       ]);
 
-      const result = await service.findEventByUid('nonexistent-uid');
+      await expect(service.findEventByUid('nonexistent-uid')).rejects.toThrow('within 2 years');
 
-      expect(result).toBeNull();
+      for (const [params] of mockClient.fetchCalendarObjects.mock.calls) {
+        const vevent = params.filters[0]['comp-filter']['comp-filter'];
+        expect(vevent['prop-filter']._attributes.name).toBe('UID');
+        expect(vevent['time-range']).toBeDefined();
+      }
+    });
+
+    it('does not fall back to a full read when the lookup fails', async () => {
+      mockClient.fetchCalendarObjects.mockRejectedValue(new DavHttpError(400));
+
+      await expect(service.findEventByUid('test-uid-123')).rejects.toThrow('HTTP 400');
+
+      expect(mockClient.fetchCalendarObjects).toHaveBeenCalledTimes(1);
     });
 
     it('searches specific calendar when calendarName provided', async () => {

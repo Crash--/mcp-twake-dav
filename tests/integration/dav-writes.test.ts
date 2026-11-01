@@ -52,8 +52,10 @@ describe('DAV writes', () => {
   };
   const writes = () => dav.requests.filter((r) => r.method === 'PUT' || r.method === 'DELETE');
   const newEvent = { title: 'x', start: '2026-11-03T10:00:00Z', end: '2026-11-03T11:00:00Z' };
-  const existing = (req: { method: string }) =>
-    req.method === 'REPORT' ? calendarObjects([{ href: '/calendars/u1/Perso/a.ics', ical }]) : null;
+  const existing = (req: { method: string }) => {
+    if (req.method === 'GET') return { status: 404 };
+    return req.method === 'REPORT' ? calendarObjects([{ href: '/calendars/u1/Perso/a.ics', ical }]) : null;
+  };
 
   it('keeps a 412 on PUT as a conflict', async () => {
     dav.handler = (req) => (req.method === 'PUT' ? { status: 412 } : existing(req));

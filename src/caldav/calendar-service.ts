@@ -16,8 +16,9 @@ import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { discoverCalendars, discoverSchedulingInbox } from './discovery.js';
 import { randomUUID } from 'node:crypto';
-import { ConflictError, DavHttpError, isDavUnsupported } from '../errors.js';
-import { addReadWarning, hasPartialRead } from './dav-fetch.js';
+import { ConflictError, DavHttpError } from '../errors.js';
+import { addReadWarning, answersJson, hasPartialRead } from './dav-fetch.js';
+import { davFetch } from './href-prefix.js';
 import { transformCalendarObject } from '../transformers/event.js';
 import { transformInvitation, type InboxResponse } from '../transformers/invitation.js';
 import { updateAttendeePartstat } from '../transformers/event-builder.js';
@@ -25,6 +26,8 @@ import type { EventDTO, InvitationDTO } from '../types/dtos.js';
 
 const DAY_MS = 86_400_000;
 const CALENDAR_LIST_TTL_MS = 60_000;
+const UID_SEARCH_YEARS = 2;
+const YEAR_MS = 365 * DAY_MS;
 
 /**
  * ISO 8601 time range for server-side calendar filtering
@@ -60,6 +63,7 @@ export class CalendarService {
   private calendars: DAVCalendar[] = [];
   private calendarsListedAt = 0;
   private schedulingInboxUrl: string | null | undefined = undefined;
+  private hasJsonApi: boolean | undefined = undefined;
 
   /**
    * Create a new CalendarService
@@ -528,69 +532,156 @@ export class CalendarService {
    * @returns EventDTO with full data including _raw, etag, url, or null if not found
    */
   async findEventByUid(uid: string, calendarName?: string): Promise<EventDTO | null> {
-    // 1. Server-side lookup: calendar-query with a UID prop-filter (RFC 4791 9.7.5).
-    //    Some servers (e.g. OpenPaaS / Twake Calendar) do not return every object
-    //    on an unfiltered full-collection query, so the client-side scan below
-    //    can miss events that do exist.
+    await this.listCalendars();
+    const targets = calendarName
+      ? this.calendars.filter(
+          (cal) => String(cal.displayName || '').toLowerCase() === calendarName.toLowerCase()
+        )
+      : this.calendars;
+    if (targets.length === 0) {
+      throw new Error(`Calendar "${calendarName ?? ''}" not found.\n\nFix: Use list_calendars to see the available names.`);
+    }
+
+    let copies = await this.findByUidOnJsonApi(uid, targets);
+    const onJsonApi = copies !== undefined;
+    if (!copies) {
+      // Standard path: calendar-query with a UID prop-filter, bounded in time because
+      // a server may parse every object of the calendar to answer it.
+      const icalTime = (ms: number) => `${new Date(ms).toISOString().slice(0, 19).replace(/[-:]/g, '')}Z`;
+      const now = Date.now();
+      const timeRange = {
+        start: icalTime(now - UID_SEARCH_YEARS * YEAR_MS),
+        end: icalTime(now + UID_SEARCH_YEARS * YEAR_MS),
+      };
+      copies = [];
+      for (const calendar of targets) {
+        copies.push(...await this.queryUid(calendar, uid, timeRange));
+      }
+    }
+
+    if (copies.length > 1) {
+      const names = copies.map((copy) =>
+        `"${String(targets.find((cal) => copy.url.startsWith(cal.url))?.displayName ?? copy.url)}"`
+      );
+      throw new Error(
+        `The UID ${uid} is in several calendars: ${names.join(', ')}.\n\nFix: Name the calendar to use with the calendar parameter.`
+      );
+    }
+    if (copies.length === 1) return copies[0];
+    if (onJsonApi) return null;
+
+    throw new Error(
+      `Event not found with UID: ${uid} within ${UID_SEARCH_YEARS} years of today.\n\nFix: Find the event with get_events_in_range or search_events to get its UID. An older event must be changed in the calendar application.`
+    );
+  }
+
+  /**
+   * Look a UID up through the JSON API of esn-sabre (Twake Calendar): it reads the
+   * uid index, so an unknown UID costs one small request whatever the calendar size.
+   *
+   * @returns The copies in `targets`, or undefined if this server has no JSON API
+   */
+  private async findByUidOnJsonApi(uid: string, targets: DAVCalendar[]): Promise<EventDTO[] | undefined> {
+    const homeUrl = `${new URL('..', targets[0].url).href.replace(/\/$/, '')}.json`;
+    const request = async (method: string, body?: string) =>
+      davFetch()(homeUrl, {
+        method,
+        body,
+        headers: {
+          ...(await this.getFreshAuthHeaders()),
+          accept: 'application/json',
+          ...(body ? { 'content-type': 'application/json' } : {}),
+        },
+      });
+
+    if (this.hasJsonApi === undefined) {
+      // A 404 on the UID below is only conclusive on a server known to have this API.
+      this.hasJsonApi = await withRetry(async () => answersJson(await request('GET')), this.logger);
+    }
+    if (!this.hasJsonApi) return undefined;
+
+    let text: string;
     try {
-      await this.listCalendars();
-      const targets = calendarName
-        ? this.calendars.filter(
-            (cal) => String(cal.displayName || '').toLowerCase() === calendarName.toLowerCase()
-          )
-        : this.calendars;
-      const filters = [
-        {
+      const response = await withRetry(() => request('REPORT', JSON.stringify({ uid })), this.logger);
+      text = await response.text();
+    } catch (err) {
+      if (err instanceof DavHttpError && err.status === 404) return [];
+      throw err;
+    }
+
+    // The server gives one copy at most, of its own choice: it says the UID exists, not
+    // where all its copies are. The other calendars are asked by a query, without a date.
+    const items: Array<{ _links?: { self?: { href?: string } } }> = JSON.parse(text)._embedded?.['dav:item'] ?? [];
+    const href = items.find((item) => item._links?.self?.href)?._links?.self?.href;
+    if (!href) return [];
+    const segments = href.split('/');
+    const filename = segments.pop() as string;
+    const calendarPath = `${segments.join('/')}/`;
+    const hit = targets.find((cal) => new URL(cal.url).pathname.endsWith(calendarPath));
+
+    const copies: EventDTO[] = [];
+    if (hit) {
+      const copy = await this.readRawEvent(hit, filename, uid);
+      if (copy) copies.push(copy);
+    }
+    for (const calendar of targets) {
+      if (calendar !== hit) copies.push(...await this.queryUid(calendar, uid));
+    }
+    return copies;
+  }
+
+  /**
+   * The object as the server stores it. The JSON API goes through a parser that cuts a
+   * text with an unescaped comma, and what we read here is written back on an update.
+   */
+  private async readRawEvent(calendar: DAVCalendar, filename: string, uid: string): Promise<EventDTO | null> {
+    // A relative URL with a colon in its first segment would read as a scheme.
+    const url = new URL(`./${filename}`, calendar.url).href;
+    const response = await withRetry(async () => {
+      const answer = await davFetch()(url, { method: 'GET', headers: { ...(await this.getFreshAuthHeaders()), accept: 'text/calendar' } });
+      if (answer.status >= 400 && answer.status !== 404) throw new DavHttpError(answer.status, answer.headers.get('retry-after'));
+      return answer;
+    }, this.logger);
+    if (response.status === 404) return null;
+    const contentType = response.headers.get('content-type') ?? '';
+    const data = await response.text();
+    // The server said this object exists: anything but the object is a failed read, not "not found".
+    if (!/calendar/i.test(contentType) || !data) {
+      throw new DavHttpError(response.status, null, `unexpected answer for the event, content type "${contentType}"`);
+    }
+    const eventDTO = transformCalendarObject({ url, etag: response.headers.get('etag') ?? undefined, data }, this.logger);
+    if (eventDTO?.uid !== uid) {
+      throw new DavHttpError(response.status, null, 'the object read is not the event asked for');
+    }
+    return eventDTO;
+  }
+
+  /** Query one calendar for a UID (RFC 4791 9.7.5), within `timeRange` if given. */
+  private async queryUid(calendar: DAVCalendar, uid: string, timeRange?: { start: string; end: string }): Promise<EventDTO[]> {
+    const filters = [
+      {
+        'comp-filter': {
+          _attributes: { name: 'VCALENDAR' },
           'comp-filter': {
-            _attributes: { name: 'VCALENDAR' },
-            'comp-filter': {
-              _attributes: { name: 'VEVENT' },
-              'prop-filter': {
-                _attributes: { name: 'UID' },
-                'text-match': { _attributes: { collation: 'i;octet' }, _text: uid },
-              },
+            _attributes: { name: 'VEVENT' },
+            ...(timeRange ? { 'time-range': { _attributes: timeRange } } : {}),
+            'prop-filter': {
+              _attributes: { name: 'UID' },
+              'text-match': { _attributes: { collation: 'i;octet' }, _text: uid },
             },
           },
         },
-      ];
-      for (const calendar of targets) {
-        const objects = await withRetry(
-          () => this.client.fetchCalendarObjects({ calendar, filters, useMultiGet: false } as any),
-          this.logger
-        );
-        for (const obj of objects) {
-          if (!obj.data) continue;
-          const eventDTO = transformCalendarObject(obj, this.logger);
-          if (eventDTO && eventDTO.uid === uid) {
-            this.logger.debug({ uid, url: eventDTO.url }, 'Found event by UID (server-side filter)');
-            return eventDTO;
-          }
-        }
-      }
-    } catch (err) {
-      if (isDavUnsupported(err)) {
-        this.logger.warn({ err, uid }, 'Server-side UID lookup not supported, falling back to full scan');
-      } else {
-        throw err;
-      }
-    }
-
-    // 2. Fallback: fetch raw calendar objects
-    const rawObjects = calendarName
-      ? await this.fetchEventsByCalendarName(calendarName)
-      : await this.fetchAllEvents();
-
-    // Transform and search for matching UID
-    for (const obj of rawObjects) {
-      const eventDTO = transformCalendarObject(obj, this.logger);
-      if (eventDTO && eventDTO.uid === uid) {
-        this.logger.debug({ uid, url: eventDTO.url }, 'Found event by UID');
-        return eventDTO;
-      }
-    }
-
-    this.logger.debug({ uid }, 'Event not found by UID');
-    return null;
+      },
+    ];
+    const objects = await withRetry(
+      () => this.client.fetchCalendarObjects({ calendar, filters, useMultiGet: false } as any),
+      this.logger
+    );
+    return objects.flatMap((obj) => {
+      const eventDTO = obj.data ? transformCalendarObject(obj, this.logger) : null;
+      // esn-sabre ignores this filter next to a time-range: the check on the client is what counts.
+      return eventDTO?.uid === uid ? [eventDTO] : [];
+    });
   }
 
   /**
