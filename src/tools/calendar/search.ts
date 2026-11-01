@@ -15,6 +15,12 @@ import {
   searchEventsByKeyword,
   searchEventsByAttendee,
   resolveCalendarEvents,
+  paginationParams,
+  checkWindow,
+  pageWindow,
+  paginateEvents,
+  formatPageFooter,
+  MAX_WINDOW_DAYS,
 } from './utils.js';
 
 /**
@@ -33,11 +39,12 @@ export function registerSearchEventsTool(
 ): void {
   server.tool(
     'search_events',
-    'Search calendar events by keyword in title/description or by attendee name. Searches the next 30 days by default. Optionally filter by calendar name.',
+    `Search calendar events by keyword in title/description or by attendee name. Searches the next 30 days by default, ${MAX_WINDOW_DAYS} days at most, one page at a time. When the response has a nextCursor, more matches remain. Optionally filter by calendar name.`,
     {
       query: z.string().optional().describe('Keyword to search in event titles and descriptions'),
       attendee: z.string().optional().describe('Attendee name to filter by'),
       when: z.string().optional().describe('Date range to search (defaults to next 30 days). Examples: \'this week\', \'next month\''),
+      ...paginationParams,
       calendar: z.string().optional().describe(
         'Calendar name to search in. Use "all" to search all calendars. ' +
         (defaultCalendar ? `Defaults to "${defaultCalendar}".` : 'Defaults to all calendars.')
@@ -94,12 +101,19 @@ export function registerSearchEventsTool(
           };
         }
 
+        const windowProblem = checkWindow(timeRange, params.cursor);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
+        }
+
         // Fetch events based on calendar param / default / all
+        const queryWindow = pageWindow(timeRange, params.cursor);
         const rawEvents = await resolveCalendarEvents(
-          calendarService, params.calendar, defaultCalendar, timeRange
+          calendarService, params.calendar, defaultCalendar, queryWindow
         );
 
         // Transform and expand recurring events
+        // Over the whole range: an occurrence moved after the cursor comes from before it.
         let events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
 
         // Apply keyword filter if query provided
@@ -111,6 +125,10 @@ export function registerSearchEventsTool(
         if (params.attendee) {
           events = searchEventsByAttendee(events, params.attendee);
         }
+
+        // Cut after the filters: a match can be anywhere in the window.
+        const { page, nextCursor } = paginateEvents(events, params.limit, params.cursor);
+        events = page;
 
         if (events.length === 0) {
           const searchDescription = params.query
@@ -130,9 +148,6 @@ export function registerSearchEventsTool(
           };
         }
 
-        // Sort by startDate ascending (already sorted, but explicit)
-        events.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
-
         // Format all events
         const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
 
@@ -142,7 +157,7 @@ export function registerSearchEventsTool(
             : `keyword "${params.query}"`
           : `attendee "${params.attendee}"`;
 
-        const result = `Found ${events.length} event${events.length === 1 ? '' : 's'} matching ${searchDescription}:\n\n${formattedEvents}`;
+        const result = `Found ${events.length} event${events.length === 1 ? '' : 's'} matching ${searchDescription} in this page:\n\n${formattedEvents}${formatPageFooter(nextCursor)}`;
 
         logger.info({ query: params.query, attendee: params.attendee, count: events.length }, 'Search completed');
 
