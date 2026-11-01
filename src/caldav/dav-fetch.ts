@@ -4,7 +4,7 @@
  * tsdav sets no timeout, fails a whole read on one object of a 207, and words a
  * failure as "cannot find principalUrl" or with the raw body of the response. Given
  * to tsdav as its `fetch` option, through href-prefix.ts: this is the one place that
- * sees discovery, query, multiget and free-busy. PUT and DELETE keep their response,
+ * sees discovery and queries. PUT and DELETE keep their response,
  * their callers read 412 from it.
  */
 
@@ -86,38 +86,26 @@ const pathOf = (href: string, base: string) => new URL(href, base).pathname.repl
 /**
  * Statuses inside a 207 on a REPORT. A failure on the collection, or on everything
  * it holds, is an error. A failure on some objects is reported with the result.
- * esn-sabre omits an unknown object from a multiget, without a status: only the list
- * of what was asked shows it.
  */
-function checkMultiStatus(url: string, requestBody: string, status: number, xml: string): void {
+function checkMultiStatus(url: string, status: number, xml: string): void {
   const objects = readObjects(xml);
-  const requested = /multiget/.test(requestBody)
-    ? [...requestBody.matchAll(new RegExp(HREF, 'g'))].map((m) => m[1])
-    : [];
-  const answered = new Set(objects.map((o) => pathOf(o.href, url)));
-  const missing = requested.filter((href) => !answered.has(pathOf(href, url)));
   const failures = objects.filter((o) => o.failure !== null);
 
   const collection = pathOf(url, url);
   const onCollection = failures.find((o) => collection.endsWith(pathOf(o.href, url)));
   if (onCollection) throw new DavHttpError(onCollection.failure as number, null, `inside a ${status} multi-status`);
 
-  if (failures.length + missing.length === 0) return;
-  if (failures.length > 0 && failures.length === objects.length) {
+  if (failures.length === 0) return;
+  if (failures.length === objects.length) {
     throw new DavHttpError(failures[0].failure as number, null, `for all ${failures.length} objects, inside a ${status} multi-status`);
   }
 
-  const names = (hrefs: string[]) => `${hrefs.slice(0, 5).map((h) => h.split('/').pop()).join(', ')}${hrefs.length > 5 ? ', ...' : ''}`;
-  if (failures.length > 0) {
-    addReadWarning(`The server failed on ${failures.length} object(s) (HTTP ${failures[0].failure}): ${names(failures.map((o) => o.href))}.`);
-  }
-  if (missing.length > 0) {
-    addReadWarning(`The server did not return ${missing.length} object(s), probably deleted just now: ${names(missing)}.`);
-  }
+  const names = failures.slice(0, 5).map((o) => o.href.split('/').pop()).join(', ');
+  addReadWarning(`The server failed on ${failures.length} object(s) (HTTP ${failures[0].failure}): ${names}${failures.length > 5 ? ', ...' : ''}.`);
 }
 
 /** A success status does not make a usable answer: tsdav reads all of these as an empty result. */
-function checkReadBody(method: string, url: string, requestBody: string, status: number, contentType: string, text: string): void {
+function checkReadBody(method: string, url: string, status: number, contentType: string, text: string): void {
   if (!text) throw new DavHttpError(status, null, 'with an empty body');
   // A proxy may answer 200 with its HTML login page.
   if (!/xml|calendar/i.test(contentType)) {
@@ -127,7 +115,7 @@ function checkReadBody(method: string, url: string, requestBody: string, status:
   if (!COMPLETE_MULTISTATUS.test(text)) {
     throw new DavHttpError(status, null, 'without a complete multi-status');
   }
-  if (method === 'REPORT') checkMultiStatus(url, requestBody, status, text);
+  if (method === 'REPORT') checkMultiStatus(url, status, text);
 }
 
 export const guardedFetch: typeof fetch = async (input, init) => {
@@ -150,7 +138,7 @@ export const guardedFetch: typeof fetch = async (input, init) => {
       throw new DavHttpError(response.status, response.headers.get('retry-after'));
     }
     if (response.ok && !isReportSet) {
-      checkReadBody(method, url, requestBody, response.status, response.headers.get('content-type') ?? '', text);
+      checkReadBody(method, url, response.status, response.headers.get('content-type') ?? '', text);
     }
     const headers = new Headers(response.headers);
     headers.delete('content-length');

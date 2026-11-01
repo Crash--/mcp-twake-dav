@@ -15,7 +15,7 @@ import type { DAVClientType } from './client.js';
 import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { discoverAddressBooks } from './discovery.js';
-import { ConflictError, isDavUnsupported } from '../errors.js';
+import { ConflictError } from '../errors.js';
 import { hasPartialRead } from './dav-fetch.js';
 import { transformVCard } from '../transformers/contact.js';
 import type { ContactDTO } from '../types/dtos.js';
@@ -109,8 +109,7 @@ export class AddressBookService {
   /**
    * Fetch contacts from a single address book
    *
-   * Uses CTag-based caching to avoid unnecessary re-fetches. Falls back to
-   * useMultiGet=false if initial fetch returns empty (SabreDAV compatibility).
+   * Uses CTag-based caching to avoid unnecessary re-fetches.
    *
    * @param addressBook - Address book to fetch contacts from
    * @returns Array of DAVVCard objects (url, etag, data fields)
@@ -141,24 +140,10 @@ export class AddressBookService {
       );
     }
 
-    // IMPORTANT FALLBACK (Research Pitfall 5): If vcards is empty or the server refuses, retry without multiGet
-    // Some SabreDAV configurations don't support addressbook-multiget REPORT
-    let vcards: DAVVCard[] = [];
-    try {
-      vcards = await withRetry(
-        () => this.client.fetchVCards({ addressBook }),
-        this.logger
-      );
-    } catch (err) {
-      if (!isDavUnsupported(err)) throw err;
-    }
-    if (vcards.length === 0) {
-      this.logger.info({ url: addressBook.url }, 'fetchVCards returned nothing, retrying without multiGet');
-      vcards = await withRetry(
-        () => this.client.fetchVCards({ addressBook, useMultiGet: false }),
-        this.logger
-      );
-    }
+    const vcards = await withRetry(
+      () => this.client.fetchVCards({ addressBook }),
+      this.logger
+    );
 
     // Update cache
     if (!hasPartialRead()) this.objectCache.set(addressBook.url, addressBook.ctag ?? '', vcards);

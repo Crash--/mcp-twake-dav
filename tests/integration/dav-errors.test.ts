@@ -77,16 +77,8 @@ describe('DAV failures reach the model', () => {
     expect(dav.requests.filter((r) => r.method === 'REPORT')).toHaveLength(1);
   });
 
-  it('reports a failing multiget as an error', async () => {
-    dav.handler = (req) => {
-      if (req.method !== 'REPORT') return null;
-      if (req.body.includes('calendar-multiget')) return { status: 413 };
-      return {
-        status: 207,
-        headers: { 'content-type': 'application/xml' },
-        body: '<d:multistatus xmlns:d="DAV:"><d:response><d:href>/calendars/u1/Perso/a.ics</d:href><d:propstat><d:prop><d:getetag>"a"</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>',
-      };
-    };
+  it('reports a refused read of the objects as an error', async () => {
+    dav.handler = (req) => (req.method === 'REPORT' ? { status: 413 } : null);
     const result = await client.callTool({ name: 'get_next_event', arguments: {} });
     expect(result.isError).toBe(true);
     expect(text(result)).toContain('HTTP 413');
@@ -171,7 +163,7 @@ describe('DAV failures reach the model', () => {
       expect(text(result)).toContain('HTTP 403');
     });
 
-    it('a free-busy 207 with an error does not say free', async () => {
+    it('a 207 with an error does not say free', async () => {
       dav.handler = (req) => (req.method === 'REPORT' ? collectionFailure(500) : null);
       const result = await client.callTool({ name: 'check_availability', arguments: availability });
       expect(result.isError).toBe(true);
@@ -228,38 +220,31 @@ describe('DAV failures reach the model', () => {
     expect(text(result)).toContain('"Nope" not found');
   });
 
-  describe('contacts without a multiget', () => {
-    const vcards = addressObjects([{ href: '/addressbooks/u1/contacts/c.vcf', vcard: 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:c\r\nFN:Alice\r\nEND:VCARD\r\n' }]);
+  describe('reading contacts', () => {
+    const vcard = 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:c\r\nFN:Alice\r\nEND:VCARD\r\n';
 
-    it.each([400, 403, 404, 405, 415, 501])('reads again without it on %i', async (status) => {
+    it('asks one query, with the data', async () => {
       const { service, tool } = await freshContactTool();
-      dav.handler = (req) => {
-        if (req.method !== 'REPORT') return null;
-        return req.body.includes('addressbook-multiget') ? { status } : vcards;
-      };
+      dav.handler = (req) => (req.method === 'REPORT' ? addressObjects([{ href: '/addressbooks/u1/contacts/c.vcf', vcard }]) : null);
       expect(await tool(service)).toContain('Alice');
+      expect(dav.requests.filter((r) => r.method === 'REPORT')).toHaveLength(1);
     });
 
-    it('does not read again on 500', async () => {
-      const { service, tool } = await freshContactTool();
-      dav.handler = (req) => {
-        if (req.method !== 'REPORT') return null;
-        return req.body.includes('addressbook-multiget') ? { status: 500 } : vcards;
-      };
-      await expect(tool(service)).rejects.toThrow('HTTP 500');
-    });
-
-    it('names a contact missing from the multiget, and does not cache the partial read', async () => {
+    it('does not take the collection for a contact without data', async () => {
       const { service, tool, callInToolContext } = await freshContactTool();
-      dav.handler = (req) => {
-        if (req.method !== 'REPORT') return null;
-        return req.body.includes('addressbook-multiget')
-          ? vcards
-          : addressObjects([
-              { href: '/addressbooks/u1/contacts/c.vcf', vcard: 'x' },
-              { href: '/addressbooks/u1/contacts/gone.vcf', vcard: 'x' },
-            ]);
-      };
+      dav.handler = (req) =>
+        req.method === 'REPORT'
+          ? addressObjects([{ href: '/addressbooks/u1/contacts/', vcard: '' }, { href: '/addressbooks/u1/contacts/c.vcf', vcard }])
+          : null;
+      expect((await callInToolContext(() => tool(service))).warning).not.toContain('no data');
+    });
+
+    it('names a contact without data, and does not cache the partial read', async () => {
+      const { service, tool, callInToolContext } = await freshContactTool();
+      dav.handler = (req) =>
+        req.method === 'REPORT'
+          ? addressObjects([{ href: '/addressbooks/u1/contacts/c.vcf', vcard }, { href: '/addressbooks/u1/contacts/gone.vcf', vcard: '' }])
+          : null;
       const result = await callInToolContext(() => tool(service));
       expect(result.warning).toContain('gone.vcf');
       dav.requests.length = 0;

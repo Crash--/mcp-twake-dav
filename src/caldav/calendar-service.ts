@@ -494,7 +494,7 @@ export class CalendarService {
       ];
       for (const calendar of targets) {
         const objects = await withRetry(
-          () => this.client.fetchCalendarObjects({ calendar, filters, useMultiGet: false } as any),
+          () => this.client.fetchCalendarObjects({ calendar, filters } as any),
           this.logger
         );
         for (const obj of objects) {
