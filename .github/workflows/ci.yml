@@ -24,3 +24,5 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      # npm ci follows the lockfile; a published package does not.
+      - run: node scripts/check-packed-install.mjs
