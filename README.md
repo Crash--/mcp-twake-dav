@@ -19,15 +19,16 @@ It speaks the open standards **CalDAV** ([RFC 4791](https://www.rfc-editor.org/r
 
 [Twake.ai](https://twake.ai) is the truly open source and sovereign Digital Workplace developed by [LINAGORA](https://linagora.com): Twake Mail, Twake Calendar, Twake Drive, Twake Chat and Twake Visio with a single account, hosted in France or on your own infrastructure.
 
-Three open source MCP servers connect AI assistants to the whole workplace:
+Four open source MCP servers connect AI assistants to the whole workplace:
 
 | MCP server | Twake.ai service | Protocol |
 |---|---|---|
 | [mcp-twake-mail](https://github.com/linagora/mcp-twake-mail) | Twake Mail | JMAP |
 | **mcp-twake-dav** (this project) | Twake Calendar and contacts | CalDAV / CardDAV |
 | [mcp-twake-drive](https://github.com/linagora/mcp-twake-drive) | Twake Drive | cozy-stack API |
+| [mcp-twake-chat](https://github.com/linagora/mcp-twake-chat) | Twake Chat | Matrix |
 
-Used together, they let one assistant prepare a meeting from the invitation, the related email thread and the documents in the drive, without your data leaving your servers.
+Used together, they let one assistant prepare a meeting from the invitation, the related email thread, the chat discussion and the documents in the drive, without your data leaving your servers.
 
 ## What it brings
 
