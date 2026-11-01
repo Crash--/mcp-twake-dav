@@ -5,6 +5,7 @@
  * in-memory testing via InMemoryTransport.
  */
 
+import { VERSION } from './version.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from './caldav/calendar-service.js';
@@ -39,7 +40,7 @@ export function createServer(
   // Initialize MCP server
   const server = new McpServer({
     name: 'mcp-twake-dav',
-    version: '0.2.4',
+    version: VERSION,
   });
 
   // Register all calendar and contact query tools

@@ -12,6 +12,7 @@
  * CRITICAL: All logs go to stderr. stdout is reserved for MCP JSON-RPC protocol.
  */
 
+import { VERSION } from './version.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadConfig } from './config/schema.js';
 import { createLogger } from './config/logger.js';
@@ -34,7 +35,7 @@ async function main() {
 
     // Step 2: Initialize logger (uses config.LOG_LEVEL)
     const logger = createLogger(config.LOG_LEVEL);
-    logger.info({ version: '0.2.4' }, 'Starting mcp-twake-dav server');
+    logger.info({ version: VERSION }, 'Starting mcp-twake-dav server');
 
     // Step 3: Create dual CalDAV/CardDAV clients
     const clients = await createDualClients(config, logger);

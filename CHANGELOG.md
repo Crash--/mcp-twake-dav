@@ -4,6 +4,15 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-11-01
+
+### Fixed
+- `get_events_in_range` with a period ("next week", "this week", "next month", "next weekend", and the French forms "la semaine prochaine", "ce mois-ci"…) returned a single day (chrono-node reads "next week" as today + 7 days), often an empty one. Periods now cover the whole week (Monday to Sunday), month or weekend.
+- With tsdav 2.5 (native fetch, no cross-fetch), `DAV_HREF_PREFIX` rewriting goes through tsdav's `fetch` option: the previous cross-fetch patch made the server fail at startup.
+
+### Changed
+- Dependencies: tsdav 2.5, @modelcontextprotocol/sdk 1.32, zod 4.6, chrono-node 2.10, TypeScript 7, vitest 5; CI actions v7.
+
 ## [3.1.0] - 2026-10-31
 
 ### Added

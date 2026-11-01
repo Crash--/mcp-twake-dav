@@ -55,9 +55,54 @@ export function getEndOfDay(date: Date): Date {
  * @param expression - Natural language date expression
  * @returns TimeRange with ISO 8601 start/end, or null if parsing fails
  */
-export function parseNaturalDateRange(expression: string): TimeRange | null {
+/**
+ * Whole periods ("next week", "this month", "la semaine prochaine"...). chrono-node reads
+ * them as a single day ("next week" = today + 7 days), so they are handled first.
+ * Weeks run Monday to Sunday.
+ */
+function parsePeriod(expression: string, now: Date): { start: Date; end: Date } | null {
+  const e = expression.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+  const patterns: [RegExp, 'week' | 'month' | 'weekend', number][] = [
+    [/^(this|current) week$|^(cette|la) semaine( en cours)?$/, 'week', 0],
+    [/^next week$|^(la )?semaine prochaine$/, 'week', 1],
+    [/^(last|previous) week$|^(la )?semaine (derniere|passee)$/, 'week', -1],
+    [/^(this|current) month$|^ce mois(-| )?ci$|^(le )?mois en cours$/, 'month', 0],
+    [/^next month$|^(le )?mois prochain$/, 'month', 1],
+    [/^(last|previous) month$|^(le )?mois (dernier|precedent)$/, 'month', -1],
+    [/^(this )?weekend$|^ce (week-end|weekend)$/, 'weekend', 0],
+    [/^next weekend$|^(le )?(week-end|weekend) prochain$/, 'weekend', 1],
+  ];
+  for (const [re, unit, offset] of patterns) {
+    if (!re.test(e)) continue;
+    const today = getStartOfDay(now);
+    if (unit === 'month') {
+      const start = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+      const end = getEndOfDay(new Date(today.getFullYear(), today.getMonth() + offset + 1, 0));
+      return { start, end };
+    }
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - ((today.getDay() + 6) % 7) + 7 * offset);
+    if (unit === 'week') {
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      return { start: monday, end: getEndOfDay(sunday) };
+    }
+    // weekend: Saturday-Sunday of that week; "this weekend" on a Sunday is today's weekend
+    const saturday = new Date(monday);
+    saturday.setDate(monday.getDate() + 5);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    return { start: saturday, end: getEndOfDay(sunday) };
+  }
+  return null;
+}
+
+export function parseNaturalDateRange(expression: string, now: Date = new Date()): TimeRange | null {
+  const period = parsePeriod(expression, now);
+  if (period) return { start: period.start.toISOString(), end: period.end.toISOString() };
+
   // Parse with chrono-node (forwardDate: true for future bias, explicit reference date)
-  const results = chrono.parse(expression, new Date(), { forwardDate: true });
+  const results = chrono.parse(expression, now, { forwardDate: true });
 
   // Return null if chrono couldn't parse the expression
   if (results.length === 0) {
