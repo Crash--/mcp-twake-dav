@@ -147,7 +147,6 @@ export function formatContactSummary(contact: ContactDTO): string {
  * - Multi-addressbook discovery
  * - Parallel fetching with Promise.all
  * - CTag-based caching per address book
- * - SabreDAV multiGet fallback
  *
  * @param addressBookService - AddressBookService instance
  * @param logger - Pino logger for error/debug output

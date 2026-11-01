@@ -92,10 +92,7 @@ describe('partial reads', () => {
   });
 
   it('check_availability names the only calendar when it refuses', async () => {
-    dav.handler = (req) => {
-      if (req.method !== 'REPORT') return null;
-      return req.body.includes('free-busy-query') ? { status: 403 } : refused;
-    };
+    dav.handler = (req) => (req.method === 'REPORT' ? refused : null);
     const { isError, text } = await call('check_availability', { start: '2020-01-01T00:00:00Z', end: '2020-01-02T00:00:00Z', calendar: 'Shared' });
     expect(isError).toBe(true);
     expect(text).toContain('"Shared"');
@@ -104,7 +101,6 @@ describe('partial reads', () => {
   it('check_availability does not say free when a calendar cannot be read', async () => {
     dav.handler = (req) => {
       if (req.method !== 'REPORT') return null;
-      if (req.body.includes('free-busy-query')) return req.url.includes('/Shared/') ? { status: 403 } : { status: 501 };
       return req.url.includes('/Shared/') ? refused : readable(req);
     };
     const { isError, text } = await call('check_availability', { start: '2020-01-01T00:00:00Z', end: '2020-01-02T00:00:00Z' });
@@ -113,20 +109,28 @@ describe('partial reads', () => {
     expect(text).toContain('unknown');
   });
 
-  it('an object left out of a multiget is a warning, not an invented 404', async () => {
-    const vcard = 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:a\r\nFN:Alice\r\nEND:VCARD\r\n';
-    dav.handler = (req) => {
-      if (req.method !== 'REPORT') return null;
-      return req.body.includes('addressbook-multiget')
-        ? addressObjects([{ href: '/addressbooks/u1/contacts/a.vcf', vcard }])
-        : addressObjects([{ href: '/addressbooks/u1/contacts/a.vcf', vcard: 'x' }, { href: '/addressbooks/u1/contacts/gone.vcf', vcard: 'x' }]);
-    };
-    const { isError, text } = await call('list_contacts');
-    expect(isError).toBeFalsy();
-    expect(text).toContain('Alice');
-    expect(text).toContain('did not return 1 object');
-    expect(text).toContain('gone.vcf');
-    expect(text).not.toContain('HTTP 404');
+  describe('an object in 200 without data', () => {
+    const noData = calendarObjects([{ href: '/calendars/u1/Perso/empty.ics', ical: '' }]);
+
+    it('is named next to the others', async () => {
+      const vcard = 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:a\r\nFN:Alice\r\nEND:VCARD\r\n';
+      dav.handler = (req) =>
+        req.method === 'REPORT'
+          ? addressObjects([{ href: '/addressbooks/u1/contacts/a.vcf', vcard }, { href: '/addressbooks/u1/contacts/gone.vcf', vcard: '' }])
+          : null;
+      const { isError, text } = await call('list_contacts');
+      expect(isError).toBeFalsy();
+      expect(text).toContain('Alice');
+      expect(text).toContain('no data');
+      expect(text).toContain('gone.vcf');
+    });
+
+    it('does not read as free', async () => {
+      dav.handler = (req) => (req.method === 'REPORT' ? noData : null);
+      const { text } = await call('check_availability', { start: '2020-01-01T00:00:00Z', end: '2020-01-02T00:00:00Z', calendar: 'Perso' });
+      expect(text).not.toContain('You are free');
+      expect(text).toContain('unknown');
+    });
   });
 
   it('an unknown property in a propstat is no failure when the data came back', async () => {
@@ -160,5 +164,6 @@ describe('partial reads', () => {
     const result = await call('get_todays_schedule', { calendar: 'Perso' });
     expect(result.isError).toBeFalsy();
     expect(result.text).not.toContain('incomplete');
+    expect(result.text).toContain('500 Oops');
   });
 });
