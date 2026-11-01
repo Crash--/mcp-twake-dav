@@ -666,8 +666,8 @@ export function createExceptionVevent(
 /**
  * Update PARTSTAT parameter on an ATTENDEE property
  *
- * Finds the ATTENDEE matching the given email and updates their PARTSTAT.
- * Also updates DTSTAMP to reflect the modification timestamp.
+ * Answers the series, and the occurrences still waiting for an answer: one already
+ * answered apart keeps its answer. Also updates DTSTAMP on what changes.
  *
  * @param iCalString - Original iCalendar string
  * @param attendeeEmail - Email of the attendee to update
@@ -683,35 +683,35 @@ export function updateAttendeePartstat(
   // Parse iCalendar
   const jCalData = ICAL.parse(iCalString);
   const comp = new ICAL.Component(jCalData);
-  const vevent = getMasterVevent(comp);
+  const vevents = comp.getAllSubcomponents('vevent');
 
-  if (!vevent) {
+  if (vevents.length === 0) {
     throw new Error('No VEVENT found in invitation');
   }
 
-  // Find matching ATTENDEE property by email
-  const attendeeProps = vevent.getAllProperties('attendee');
   let found = false;
+  for (const vevent of vevents) {
+    // Find matching ATTENDEE property by email
+    const attendee = vevent.getAllProperties('attendee').find((prop: ICAL.Property) => {
+      const value = prop.getFirstValue();
+      return typeof value === 'string' && value.replace(/^mailto:/i, '').toLowerCase() === attendeeEmail.toLowerCase();
+    });
+    if (!attendee) continue;
+    found = true;
 
-  for (const prop of attendeeProps) {
-    const value = prop.getFirstValue();
-    if (typeof value === 'string') {
-      const email = value.replace(/^mailto:/i, '').toLowerCase();
-      if (email === attendeeEmail.toLowerCase()) {
-        // Update PARTSTAT parameter
-        prop.setParameter('partstat', partstat);
-        found = true;
-        break;
-      }
-    }
+    const current = attendee.getParameter('partstat');
+    const waiting = !current || String(current).toUpperCase() === 'NEEDS-ACTION';
+    if (vevent.hasProperty('recurrence-id') && !waiting) continue;
+
+    // Update PARTSTAT parameter
+    attendee.setParameter('partstat', partstat);
+    // Update DTSTAMP (modification timestamp per RFC 6638)
+    vevent.updatePropertyWithValue('dtstamp', ICAL.Time.now());
   }
 
   if (!found) {
     throw new Error(`Attendee ${attendeeEmail} not found in invitation`);
   }
-
-  // Update DTSTAMP (modification timestamp per RFC 6638)
-  vevent.updatePropertyWithValue('dtstamp', ICAL.Time.now());
 
   // Serialize back to iCalendar string
   return comp.toString();

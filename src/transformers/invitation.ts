@@ -1,17 +1,19 @@
 /**
  * Invitation transformer
  *
- * Transforms CalDAV scheduling inbox responses into typed InvitationDTO objects.
- * Handles organizer extraction and PARTSTAT parsing for pending invitations.
+ * Reads what a calendar object asks of the current user. An object can hold a master
+ * and several exceptions, each with its own attendees and PARTSTAT, or an exception
+ * alone for someone invited to a single occurrence.
  */
 
 import ICAL from 'ical.js';
 import type { Logger } from 'pino';
 import type { InvitationDTO } from '../types/dtos.js';
-import { registerTimezones } from './timezone.js';
+import { expandRecurringEvent } from './recurrence.js';
+import { icalTimeToDate, registerTimezones } from './timezone.js';
 
 /**
- * Raw inbox response from tsdav calendarQuery
+ * Raw response from tsdav calendarQuery
  */
 export interface InboxResponse {
   href: string;
@@ -21,99 +23,120 @@ export interface InboxResponse {
   };
 }
 
+export interface InvitationOptions {
+  /** Keep what happens in this range, with a series shown at its next occurrence there */
+  timeRange?: { start: string; end: string };
+  userTimezone?: string;
+}
+
+function findAttendee(vevent: ICAL.Component, userEmails: string[]): { email: string; partstat: string } | null {
+  for (const attendee of vevent.getAllProperties('attendee')) {
+    const value = attendee.getFirstValue();
+    if (typeof value !== 'string') continue;
+    const email = value.replace(/^mailto:/i, '').toLowerCase();
+    if (userEmails.includes(email)) {
+      const partstat = attendee.getParameter('partstat');
+      return { email, partstat: (typeof partstat === 'string' ? partstat : 'NEEDS-ACTION').toUpperCase() };
+    }
+  }
+  return null;
+}
+
 /**
- * Transform a CalDAV inbox response into an InvitationDTO
+ * Transform a calendar object into one invitation per VEVENT the current user attends,
+ * leaving out what was cancelled.
  *
- * Parses iCalendar VEVENT data, extracts organizer info, and finds
- * the current user's PARTSTAT from ATTENDEE properties.
- *
- * @param response - Raw response from calendarQuery on inbox
- * @param userEmail - Current user's email to match in ATTENDEE list
+ * @param response - Raw response from calendarQuery
+ * @param userEmails - Current user's lowercase emails to match in ATTENDEE list
  * @param logger - Pino logger for error/debug output
- * @returns Parsed InvitationDTO or null if parsing fails
+ * @returns The invitations of this object
+ * @throws Error if the object cannot be parsed
  */
-export function transformInvitation(
+export function transformInvitations(
   response: InboxResponse,
-  userEmail: string,
-  logger: Logger
-): InvitationDTO | null {
-  try {
-    const calendarData = response.props?.calendarData;
-    if (!calendarData) {
-      logger.warn({ href: response.href }, 'Inbox response has no calendar data');
-      return null;
-    }
+  userEmails: string[],
+  logger: Logger,
+  options: InvitationOptions = {},
+): InvitationDTO[] {
+  const calendarData = response.props?.calendarData;
+  if (!calendarData) {
+    throw new Error('no calendar data');
+  }
 
-    // Parse iCalendar text
-    const jCalData = ICAL.parse(calendarData);
-    const comp = new ICAL.Component(jCalData);
+  const comp = new ICAL.Component(ICAL.parse(calendarData));
+  registerTimezones(comp, logger);
 
-    // Register timezones before accessing dates
-    registerTimezones(comp, logger);
+  const vevents = comp.getAllSubcomponents('vevent');
+  const exceptions = vevents.filter((v: ICAL.Component) => v.hasProperty('recurrence-id'));
+  const { timeRange, userTimezone } = options;
+  const rangeStart = timeRange ? new Date(timeRange.start) : null;
+  const rangeEnd = timeRange ? new Date(timeRange.end) : null;
+  const exceptionTimes = new Set(
+    exceptions.map((v: ICAL.Component) => {
+      const recurrenceId = new ICAL.Event(v).recurrenceId;
+      return recurrenceId ? icalTimeToDate(recurrenceId, userTimezone).getTime() : 0;
+    })
+  );
 
-    // Extract VEVENT
-    const vevent = comp.getFirstSubcomponent('vevent');
-    if (!vevent) {
-      logger.debug({ href: response.href }, 'No VEVENT in inbox item');
-      return null;
-    }
+  const invitations: InvitationDTO[] = [];
+  for (const vevent of vevents) {
+    const status = vevent.getFirstPropertyValue('status');
+    if (status && String(status).toUpperCase() === 'CANCELLED') continue;
+
+    const attendee = findAttendee(vevent, userEmails);
+    if (!attendee) continue;
 
     const event = new ICAL.Event(vevent);
-
-    // Validate UID
     if (!event.uid) {
       logger.warn({ href: response.href }, 'VEVENT missing UID');
-      return null;
+      continue;
     }
 
-    // Extract organizer
+    let proposedStart = icalTimeToDate(event.startDate, userTimezone);
+    let proposedEnd = icalTimeToDate(event.endDate, userTimezone);
+    const isOccurrence = vevent.hasProperty('recurrence-id');
+    if (rangeStart && rangeEnd) {
+      if (vevent.hasProperty('rrule')) {
+        // A series that began in 2020 is asked about at its next date, not at its first.
+        const duration = proposedEnd.getTime() - proposedStart.getTime();
+        const next = expandRecurringEvent(vevent, {
+          maxOccurrences: exceptions.length + 1,
+          maxDate: rangeEnd,
+          startDate: rangeStart,
+          userTimezone,
+        }).find((date) => date < rangeEnd && !exceptionTimes.has(date.getTime()));
+        if (!next) continue;
+        proposedStart = next;
+        proposedEnd = new Date(next.getTime() + duration);
+      } else if (proposedStart >= rangeEnd || (proposedEnd <= rangeStart && proposedStart < rangeStart)) {
+        continue;
+      }
+    }
+
     const organizerProp = vevent.getFirstProperty('organizer');
-    let organizerName = 'Unknown';
-    let organizerEmail = '';
+    const cn = organizerProp?.getParameter('cn');
+    const organizerValue = organizerProp?.getFirstValue();
+    const organizerEmail = typeof organizerValue === 'string' ? organizerValue.replace(/^mailto:/i, '') : '';
 
-    if (organizerProp) {
-      const cnParam = organizerProp.getParameter('cn');
-      organizerName = (typeof cnParam === 'string' ? cnParam : undefined) || 'Unknown';
-
-      const orgValue = organizerProp.getFirstValue();
-      if (typeof orgValue === 'string') {
-        organizerEmail = orgValue.replace(/^mailto:/i, '');
-      }
-    }
-
-    // Find current user's PARTSTAT from attendees
-    let userPartstat = 'NEEDS-ACTION';
-    const normalizedUserEmail = userEmail.toLowerCase();
-
-    for (const attendee of event.attendees) {
-      const attendeeValue = attendee.getFirstValue();
-      if (typeof attendeeValue === 'string') {
-        const attendeeEmail = attendeeValue.replace(/^mailto:/i, '').toLowerCase();
-        if (attendeeEmail === normalizedUserEmail) {
-          const partstatParam = attendee.getParameter('partstat');
-          userPartstat = (typeof partstatParam === 'string' ? partstatParam : undefined) || 'NEEDS-ACTION';
-          break;
-        }
-      }
-    }
-
-    return {
+    invitations.push({
       uid: event.uid,
       summary: event.summary || '(No title)',
       organizer: {
-        name: organizerName,
+        name: (typeof cn === 'string' ? cn : undefined) || 'Unknown',
         email: organizerEmail,
       },
-      proposedStart: event.startDate.toJSDate(),
-      proposedEnd: event.endDate.toJSDate(),
+      userIsOrganizer: userEmails.includes(organizerEmail.toLowerCase()),
+      hasExceptions: exceptions.length > 0,
+      proposedStart,
+      proposedEnd,
       location: event.location || undefined,
-      userPartstat,
+      userPartstat: attendee.partstat,
+      attendeeEmail: attendee.email,
+      isOccurrence,
       url: response.href,
       etag: response.props?.getetag || '',
       _raw: calendarData,
-    };
-  } catch (err) {
-    logger.error({ err, href: response.href }, 'Failed to parse invitation');
-    return null;
+    });
   }
+  return invitations;
 }

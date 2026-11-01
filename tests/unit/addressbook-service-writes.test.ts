@@ -48,6 +48,7 @@ describe('AddressBookService write methods', () => {
       updateVCard: vi.fn(),
       deleteVCard: vi.fn(),
       fetchVCards: vi.fn(),
+      collectionQuery: vi.fn(),
       fetchAddressBooks: vi.fn(),
       isCollectionDirty: vi.fn(),
     };
@@ -247,12 +248,11 @@ describe('AddressBookService write methods', () => {
     it('finds contact by UID across all address books', async () => {
       const targetUid = 'test-contact-uid-456';
 
-      // Mock fetchVCards to return contact with matching UID
-      mockClient.fetchVCards.mockResolvedValue([
+      mockClient.collectionQuery.mockResolvedValue([
         {
-          url: 'https://dav.example.com/addressbooks/default/contact1.vcf',
-          data: sampleVCard,
-          etag: '"etag-123"',
+          ok: true,
+          href: 'https://dav.example.com/addressbooks/default/contact1.vcf',
+          props: { addressData: sampleVCard, getetag: '"etag-123"' },
         },
       ]);
 
@@ -267,30 +267,23 @@ describe('AddressBookService write methods', () => {
       expect(result?.url).toBe('https://dav.example.com/addressbooks/default/contact1.vcf');
     });
 
-    it('returns null when UID not found', async () => {
-      // Mock fetchVCards to return contacts without matching UID
-      mockClient.fetchVCards.mockResolvedValue([
-        {
-          url: 'https://dav.example.com/addressbooks/default/contact1.vcf',
-          data: 'BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Other User\r\nUID:other-uid\r\nEND:VCARD',
-          etag: '"etag-123"',
-        },
-      ]);
+    it('returns null when UID not found, without reading the address book', async () => {
+      mockClient.collectionQuery.mockResolvedValue([]);
 
       const result = await service.findContactByUid('non-existent-uid');
 
       expect(result).toBeNull();
+      expect(mockClient.fetchVCards).not.toHaveBeenCalled();
     });
 
     it('searches specific address book when addressBookName provided', async () => {
       const targetUid = 'test-contact-uid-456';
 
-      // Mock fetchVCards to return contact with matching UID
-      mockClient.fetchVCards.mockResolvedValue([
+      mockClient.collectionQuery.mockResolvedValue([
         {
-          url: 'https://dav.example.com/addressbooks/default/contact1.vcf',
-          data: sampleVCard,
-          etag: '"etag-123"',
+          ok: true,
+          href: 'https://dav.example.com/addressbooks/default/contact1.vcf',
+          props: { addressData: sampleVCard, getetag: '"etag-123"' },
         },
       ]);
 
@@ -299,8 +292,8 @@ describe('AddressBookService write methods', () => {
       expect(result).not.toBeNull();
       expect(result?.uid).toBe(targetUid);
 
-      // Verify only one fetchVCards call (specific address book, not all)
-      expect(mockClient.fetchVCards).toHaveBeenCalledOnce();
+      // Verify only one query (specific address book, not all)
+      expect(mockClient.collectionQuery).toHaveBeenCalledOnce();
     });
   });
 });

@@ -111,6 +111,11 @@ function getAuthConfig(config: Config) {
   };
 }
 
+/** Auth headers for a request tsdav does not send, with a fresh command token. */
+export function freshAuthHeaders(config: Config): Promise<Record<string, string>> {
+  return getAuthConfig(config).authFunction();
+}
+
 /**
  * Create a CalDAV client configured with the selected auth method
  *

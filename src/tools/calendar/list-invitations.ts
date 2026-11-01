@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
-import * as chrono from 'chrono-node';
+import { checkWindow, parseDateRange, DEFAULT_WINDOW_DAYS, ISO_DATE_HELP, MAX_WINDOW_DAYS } from './utils.js';
 
 /**
  * Register the list_invitations tool
@@ -27,12 +27,12 @@ export function registerListInvitationsTool(
 ): void {
   server.tool(
     'list_invitations',
-    'List pending calendar invitations awaiting your response. Shows organizer, event title, proposed time, and location for each invitation that needs a response (PARTSTAT=NEEDS-ACTION). After listing, ask the user: "Would you like to accept or decline any of these?"',
+    `List pending calendar invitations awaiting your response, for events in a date range (the next ${DEFAULT_WINDOW_DAYS} days by default, ${MAX_WINDOW_DAYS} days at most). Shows organizer, event title, proposed time, and location for each invitation that needs a response (PARTSTAT=NEEDS-ACTION). When the response has a nextOffset, more invitations remain. After listing, ask the user: "Would you like to accept or decline any of these?"`,
     {
-      timeRange: z.object({
-        start: z.string().describe('Start of time range (ISO 8601 or natural language like "today", "next week")'),
-        end: z.string().describe('End of time range (ISO 8601 or natural language)'),
-      }).optional().describe('Optional: filter invitations by proposed event time'),
+      start: z.string().optional().describe(`Start of the range, defaults to now. ${ISO_DATE_HELP}`),
+      end: z.string().optional().describe(`End of the range, a date alone includes that whole day. Defaults to ${DEFAULT_WINDOW_DAYS} days after the start.`),
+      limit: z.number().int().min(1).max(100).optional().describe('Maximum number of invitations to return (default 30, maximum 100).'),
+      offset: z.number().int().min(0).optional().describe('The nextOffset of the previous response. Repeat the same dates with it.'),
     },
     {
       readOnlyHint: true,
@@ -43,32 +43,28 @@ export function registerListInvitationsTool(
       try {
         logger.debug({ params }, 'list_invitations called');
 
-        // Parse time range if provided
-        let timeRange: { start: string; end: string } | undefined;
-        if (params.timeRange) {
-          const startDate = chrono.parseDate(params.timeRange.start);
-          const endDate = chrono.parseDate(params.timeRange.end);
-
-          if (startDate && endDate) {
-            timeRange = {
-              start: startDate.toISOString(),
-              end: endDate.toISOString(),
-            };
-            logger.debug({ timeRange }, 'Parsed time range filter');
-          } else {
-            logger.warn({ params: params.timeRange }, 'Could not parse time range, ignoring filter');
-          }
+        const timeRange = parseDateRange(params.start, params.end, DEFAULT_WINDOW_DAYS, userTimezone);
+        if ('problem' in timeRange) {
+          return { content: [{ type: 'text' as const, text: timeRange.problem }], isError: true };
+        }
+        const windowProblem = checkWindow(timeRange);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
         }
 
         // Query pending invitations
-        const invitations = await calendarService.listPendingInvitations(timeRange);
+        const pending = await calendarService.listPendingInvitations(timeRange, userTimezone);
+        const limit = params.limit ?? 30;
+        const offset = params.offset ?? 0;
+        const invitations = pending.slice(offset, offset + limit);
+        const nextOffset = pending.length > offset + limit ? offset + limit : null;
 
         if (invitations.length === 0) {
           logger.info('No pending invitations found');
           return {
             content: [{
               type: 'text' as const,
-              text: 'No pending invitations.',
+              text: `No pending invitations between ${timeRange.start} and ${timeRange.end}.`,
             }],
           };
         }
@@ -80,13 +76,16 @@ export function registerListInvitationsTool(
           const endStr = inv.proposedEnd.toLocaleString('en-US', { timeZone: displayTimezone });
           const location = inv.location ? `\n  Location: ${inv.location}` : '';
 
-          return `- ${inv.summary}
+          return `- ${inv.summary}${inv.isOccurrence ? ' (one occurrence of a series)' : ''}
   Organizer: ${inv.organizer.name} <${inv.organizer.email}>
   When: ${startStr} - ${endStr}${location}
   UID: ${inv.uid}`;
         }).join('\n\n');
 
-        const result = `Pending invitations (${invitations.length}):\n\n${formatted}`;
+        const footer = nextOffset === null
+          ? '\n\nNo more invitations in this range.'
+          : `\n\nMore invitations remain. To continue, call again with the same dates and:\nnextOffset: ${nextOffset}`;
+        const result = `Pending invitations (${invitations.length} in this page):\n\n${formatted}${footer}`;
 
         logger.info({ count: invitations.length }, 'Listed pending invitations');
 

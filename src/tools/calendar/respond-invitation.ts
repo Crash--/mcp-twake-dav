@@ -18,13 +18,12 @@ import type { InvitationDTO } from '../../types/dtos.js';
  * @param server - MCP server instance
  * @param calendarService - Calendar service for responding to invitations
  * @param logger - Pino logger
- * @param config - Configuration with DAV_USERNAME for attendee email
  */
 export function registerRespondInvitationTool(
   server: McpServer,
   calendarService: CalendarService,
   logger: Logger,
-  config: { DAV_USERNAME?: string },
+  userTimezone?: string,
 ): void {
   server.tool(
     'respond_to_invitation',
@@ -47,18 +46,6 @@ export function registerRespondInvitationTool(
       try {
         logger.debug({ params }, 'respond_to_invitation called');
 
-        // Get user email from config
-        const userEmail = config.DAV_USERNAME || '';
-        if (!userEmail) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: 'Cannot determine user email. DAV_USERNAME configuration is required for invitation responses.',
-            }],
-            isError: true,
-          };
-        }
-
         // Map response to PARTSTAT value
         const partstatMap: Record<string, 'ACCEPTED' | 'DECLINED' | 'TENTATIVE'> = {
           accept: 'ACCEPTED',
@@ -67,31 +54,11 @@ export function registerRespondInvitationTool(
         };
         const partstat = partstatMap[params.response];
 
-        // Find the invitation by UID (need to query pending invitations)
-        const invitations = await calendarService.listPendingInvitations();
-        const invitation = invitations.find((inv) => inv.uid === params.uid);
-
-        if (!invitation) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Invitation not found with UID: ${params.uid}\n\nUse list_invitations to see pending invitations and their UIDs.`,
-            }],
-            isError: true,
-          };
-        }
-
         // Respond to invitation
-        await calendarService.respondToInvitation(
-          invitation.url,
-          invitation.etag,
-          userEmail,
-          partstat,
-          invitation._raw
-        );
+        const invitation = await calendarService.respondToInvitation(params.uid, partstat, userTimezone);
 
         // Build response message
-        const responseText = buildResponseMessage(invitation, params.response, partstat);
+        const responseText = buildResponseMessage(invitation, params.response, partstat, userTimezone);
 
         logger.info(
           { uid: params.uid, response: partstat },
@@ -137,7 +104,8 @@ export function registerRespondInvitationTool(
 function buildResponseMessage(
   invitation: InvitationDTO,
   response: string,
-  partstat: string
+  partstat: string,
+  userTimezone?: string,
 ): string {
   const actionVerb: Record<string, string> = {
     accept: 'accepted',
@@ -146,13 +114,20 @@ function buildResponseMessage(
   };
   const action = actionVerb[response] || response;
 
-  const startStr = invitation.proposedStart.toLocaleString();
-  const endStr = invitation.proposedEnd.toLocaleString();
+  const startStr = invitation.proposedStart.toLocaleString('en-US', { timeZone: userTimezone });
+  const endStr = invitation.proposedEnd.toLocaleString('en-US', { timeZone: userTimezone });
+
+  const { organizer, userIsOrganizer, hasExceptions } = invitation;
+  const notice = !organizer.email || userIsOrganizer
+    ? 'Your response is saved on your copy of the event.'
+    : hasExceptions
+    ? 'Your response is saved on your copy of the event. The server sends it to the organizer, who may not see it on the occurrences changed in this series.'
+    : 'Your response is saved on your copy of the event, and the server sends it to the organizer.';
 
   return `Invitation ${action}!\n\n` +
     `Event: ${invitation.summary}\n` +
-    `Organizer: ${invitation.organizer.name} <${invitation.organizer.email}>\n` +
+    (organizer.email ? `Organizer: ${organizer.name} <${organizer.email}>\n` : '') +
     `When: ${startStr} - ${endStr}\n` +
     `Your status: ${partstat}\n\n` +
-    `The organizer will be notified of your response.`;
+    notice;
 }

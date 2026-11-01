@@ -116,7 +116,7 @@ export function registerAllTools(
 
   // Register invitation tools (Phase 16)
   registerListInvitationsTool(server, calendarService, logger, userTimezone);
-  registerRespondInvitationTool(server, calendarService, logger, config || {});
+  registerRespondInvitationTool(server, calendarService, logger, userTimezone);
 
   // Register list_calendars tool inline (CAL-05)
   server.tool(

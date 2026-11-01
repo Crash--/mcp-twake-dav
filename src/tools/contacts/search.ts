@@ -9,9 +9,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { AddressBookService } from '../../caldav/addressbook-service.js';
 import {
-  resolveAddressBookContacts,
-  searchContactsByName,
-  searchContactsByOrganization,
+  contactPageParams,
+  resolveAddressBookName,
+  toContacts,
+  formatContactFooter,
+  DEFAULT_CONTACT_LIMIT,
   formatContact,
 } from './utils.js';
 
@@ -30,10 +32,11 @@ export function registerSearchContactsTool(
 ): void {
   server.tool(
     'search_contacts',
-    'Search contacts by name. Supports optional organization and address book filters. Case-insensitive partial matching on formatted name, given name, and family name.',
+    'Search contacts by name, one page at a time. Supports optional organization and address book filters. Case-insensitive partial matching on formatted name, given name, and family name. When the response has a nextCursor, more contacts match.',
     {
       name: z.string().optional().describe('Name to search for (case-insensitive, partial match)'),
       organization: z.string().optional().describe('Organization to filter by (case-insensitive, partial match)'),
+      ...contactPageParams,
       addressbook: z.string().optional().describe(
         'Address book name to search in. Use "all" to search all address books. ' +
         (defaultAddressBook ? `Defaults to "${defaultAddressBook}".` : 'Defaults to all address books.')
@@ -62,23 +65,13 @@ export function registerSearchContactsTool(
           };
         }
 
-        // Fetch contacts based on addressbook param / default / all
-        const contacts = await resolveAddressBookContacts(
-          addressBookService, params.addressbook, defaultAddressBook, logger
+        const { vcards, nextCursor } = await addressBookService.searchContactsPage(
+          resolveAddressBookName(params.addressbook, defaultAddressBook),
+          { name: params.name, organization: params.organization },
+          params.limit ?? DEFAULT_CONTACT_LIMIT,
+          params.cursor,
         );
-
-        // Apply filters
-        let filteredContacts = contacts;
-
-        // Apply name filter if provided
-        if (params.name) {
-          filteredContacts = searchContactsByName(filteredContacts, params.name);
-        }
-
-        // Apply organization filter if provided (intersection if both filters)
-        if (params.organization) {
-          filteredContacts = searchContactsByOrganization(filteredContacts, params.organization);
-        }
+        const filteredContacts = toContacts(vcards, logger);
 
         // Build search criteria description
         const criteria = params.name && params.organization
@@ -104,7 +97,7 @@ export function registerSearchContactsTool(
           .map((contact) => formatContact(contact))
           .join('\n\n');
 
-        const result = `Found ${filteredContacts.length} contact${filteredContacts.length === 1 ? '' : 's'} matching ${criteria}:\n\n${formattedContacts}`;
+        const result = `Found ${filteredContacts.length} contact${filteredContacts.length === 1 ? '' : 's'} matching ${criteria} in this page:\n\n${formattedContacts}${formatContactFooter(nextCursor)}`;
 
         logger.info({ name: params.name, organization: params.organization, count: filteredContacts.length }, 'Search completed');
 

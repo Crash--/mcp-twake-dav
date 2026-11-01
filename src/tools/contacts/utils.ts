@@ -5,69 +5,16 @@
  * Phase 5 contact MCP tools.
  *
  * Key capabilities:
- * - Case-insensitive name and organization search
  * - Contact formatting for LLM-optimized output
- * - Multi-addressbook aggregation and transformation
+ * - Pages across address books
  */
 
+import { z } from 'zod';
 import type { Logger } from 'pino';
+import type { DAVVCard } from 'tsdav';
 import type { ContactDTO } from '../../types/dtos.js';
-import type { AddressBookService } from '../../caldav/addressbook-service.js';
+import type { ContactCursor } from '../../caldav/addressbook-service.js';
 import { transformVCard } from '../../transformers/contact.js';
-
-/**
- * Search contacts by name (case-insensitive partial match)
- *
- * Searches across formatted name, given name, and family name fields.
- * Handles partial matches (e.g., "Marie" finds "Marie Dupont").
- *
- * @param contacts - Array of ContactDTOs to search
- * @param query - Search query (case-insensitive)
- * @returns Filtered array of matching contacts
- */
-export function searchContactsByName(
-  contacts: ContactDTO[],
-  query: string
-): ContactDTO[] {
-  const lowerQuery = query.toLowerCase();
-
-  return contacts.filter(contact => {
-    // Search formatted name (FN property)
-    const formattedMatch = contact.name.formatted
-      ?.toLowerCase()
-      .includes(lowerQuery);
-
-    // Search given name (N property - given name component)
-    const givenMatch = contact.name.given
-      ?.toLowerCase()
-      .includes(lowerQuery);
-
-    // Search family name (N property - family name component)
-    const familyMatch = contact.name.family
-      ?.toLowerCase()
-      .includes(lowerQuery);
-
-    return formattedMatch || givenMatch || familyMatch;
-  });
-}
-
-/**
- * Search contacts by organization (case-insensitive partial match)
- *
- * @param contacts - Array of ContactDTOs to search
- * @param query - Organization search query (case-insensitive)
- * @returns Filtered array of matching contacts
- */
-export function searchContactsByOrganization(
-  contacts: ContactDTO[],
-  query: string
-): ContactDTO[] {
-  const lowerQuery = query.toLowerCase();
-
-  return contacts.filter(contact => {
-    return contact.organization?.toLowerCase().includes(lowerQuery) ?? false;
-  });
-}
 
 /**
  * Format contact as concise multi-line text for LLM consumption
@@ -137,75 +84,40 @@ export function formatContactSummary(contact: ContactDTO): string {
   return `${name}${email}${org}`;
 }
 
-/**
- * Get all contacts from all address books with transformation
- *
- * Fetches raw DAVVCards from AddressBookService, transforms to ContactDTOs,
- * and filters out null results (parse failures).
- *
- * AddressBookService.fetchAllContacts() handles:
- * - Multi-addressbook discovery
- * - Parallel fetching with Promise.all
- * - CTag-based caching per address book
- * - SabreDAV multiGet fallback
- *
- * @param addressBookService - AddressBookService instance
- * @param logger - Pino logger for error/debug output
- * @returns Array of ContactDTOs from all address books
- */
-export async function getAllContacts(
-  addressBookService: AddressBookService,
-  logger: Logger
-): Promise<ContactDTO[]> {
-  // Fetch raw DAVVCards from all address books
-  const rawContacts = await addressBookService.fetchAllContacts();
+export const DEFAULT_CONTACT_LIMIT = 30;
 
-  // Transform to ContactDTOs (filter out null = parse failures)
-  const contacts = rawContacts
-    .map(vcard => transformVCard(vcard as any, logger))
-    .filter((contact): contact is ContactDTO => contact !== null);
-
-  logger.info({ count: contacts.length }, 'Transformed all contacts');
-
-  return contacts;
-}
+export const contactPageParams = {
+  limit: z.number().int().min(1).max(100).optional().describe(
+    `Maximum number of contacts to return (default ${DEFAULT_CONTACT_LIMIT}, maximum 100).`
+  ),
+  cursor: z.object({
+    book: z.number().int().min(0),
+    offset: z.number().int().min(0),
+    version: z.string().optional(),
+  }).optional().describe('The nextCursor of the previous response. Repeat the same filters with it.'),
+};
 
 /**
- * Resolve which address book(s) to query based on the addressbook parameter and default setting,
- * then fetch and transform contacts.
+ * Which address book to read. "all" and no default mean every address book.
  *
- * Resolution order:
- * 1. addressbookParam provided and != "all" -> fetch from that specific address book
- * 2. addressbookParam === "all" -> fetch from all address books
- * 3. addressbookParam absent + defaultAddressBook set -> fetch from default address book
- * 4. addressbookParam absent + no default -> fetch from all address books
- *
- * @param addressBookService - AddressBook service instance
- * @param addressbookParam - Optional address book name from tool parameter
- * @param defaultAddressBook - Optional default address book name from config
- * @param logger - Pino logger
- * @returns Array of ContactDTOs from resolved address book(s)
+ * @returns The address book name, or undefined for all of them
  */
-export async function resolveAddressBookContacts(
-  addressBookService: AddressBookService,
+export function resolveAddressBookName(
   addressbookParam: string | undefined,
   defaultAddressBook: string | undefined,
-  logger: Logger,
-): Promise<ContactDTO[]> {
-  const target = addressbookParam === 'all' ? undefined : (addressbookParam || defaultAddressBook);
+): string | undefined {
+  return addressbookParam === 'all' ? undefined : (addressbookParam || defaultAddressBook);
+}
 
-  let rawContacts;
-  if (target) {
-    rawContacts = await addressBookService.fetchContactsByAddressBookName(target);
-  } else {
-    rawContacts = await addressBookService.fetchAllContacts();
-  }
-
-  const contacts = rawContacts
+export function toContacts(vcards: DAVVCard[], logger: Logger): ContactDTO[] {
+  return vcards
     .map(vcard => transformVCard(vcard as any, logger))
     .filter((contact): contact is ContactDTO => contact !== null);
+}
 
-  logger.info({ count: contacts.length }, 'Transformed contacts');
-
-  return contacts;
+/** The last lines of a page: the model must never read a page as the whole result. */
+export function formatContactFooter(nextCursor: ContactCursor | null): string {
+  return nextCursor
+    ? `\n\nMore contacts remain. To continue, call again with the same filters and pass this value as cursor:\nnextCursor: ${JSON.stringify(nextCursor)}`
+    : '\n\nNo more contacts.';
 }

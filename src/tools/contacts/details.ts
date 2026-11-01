@@ -9,8 +9,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { AddressBookService } from '../../caldav/addressbook-service.js';
 import {
-  resolveAddressBookContacts,
-  searchContactsByName,
+  contactPageParams,
+  resolveAddressBookName,
+  toContacts,
+  formatContactFooter,
+  DEFAULT_CONTACT_LIMIT,
   formatContact,
 } from './utils.js';
 
@@ -29,9 +32,10 @@ export function registerGetContactDetailsTool(
 ): void {
   server.tool(
     'get_contact_details',
-    'Get full details for a specific contact by name. Returns detailed contact information including all email addresses, phone numbers, and organization. Optionally filter by address book.',
+    'Get full details for a specific contact by name, one page of matches at a time. Returns detailed contact information including all email addresses, phone numbers, and organization. When the response has a nextCursor, more contacts match. Optionally filter by address book.',
     {
       name: z.string().describe('Contact name to look up (case-insensitive, partial match)'),
+      ...contactPageParams,
       addressbook: z.string().optional().describe(
         'Address book name to search in. Use "all" to search all address books. ' +
         (defaultAddressBook ? `Defaults to "${defaultAddressBook}".` : 'Defaults to all address books.')
@@ -46,13 +50,13 @@ export function registerGetContactDetailsTool(
       try {
         logger.debug({ params }, 'get_contact_details called');
 
-        // Fetch contacts based on addressbook param / default / all
-        const contacts = await resolveAddressBookContacts(
-          addressBookService, params.addressbook, defaultAddressBook, logger
+        const { vcards, nextCursor } = await addressBookService.searchContactsPage(
+          resolveAddressBookName(params.addressbook, defaultAddressBook),
+          { name: params.name },
+          params.limit ?? DEFAULT_CONTACT_LIMIT,
+          params.cursor,
         );
-
-        // Search by name
-        const matchingContacts = searchContactsByName(contacts, params.name);
+        const matchingContacts = toContacts(vcards, logger);
 
         if (matchingContacts.length === 0) {
           logger.info({ name: params.name }, 'No contact found');
@@ -71,9 +75,9 @@ export function registerGetContactDetailsTool(
           .map((contact) => formatContact(contact))
           .join('\n\n');
 
-        const result = matchingContacts.length === 1
+        const result = matchingContacts.length === 1 && !nextCursor
           ? `Contact details for ${matchingContacts[0].name.formatted || [matchingContacts[0].name.given, matchingContacts[0].name.family].filter(Boolean).join(' ') || '(No name)'}:\n\n${formattedContacts}`
-          : `Found ${matchingContacts.length} contacts matching "${params.name}":\n\n${formattedContacts}`;
+          : `Found ${matchingContacts.length} contacts matching "${params.name}" in this page:\n\n${formattedContacts}${formatContactFooter(nextCursor)}`;
 
         logger.info({ name: params.name, count: matchingContacts.length }, 'Contact details retrieved');
 

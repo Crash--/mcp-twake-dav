@@ -11,12 +11,15 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import type { DAVAddressBook, DAVVCard } from 'tsdav';
-import type { DAVClientType } from './client.js';
+import ICAL from 'ical.js';
+import { freshAuthHeaders, type DAVClientType } from './client.js';
+import type { Config } from '../config/schema.js';
 import { CollectionCache } from './cache.js';
+import { addReadWarning, answersJson, hasPartialRead } from './dav-fetch.js';
+import { davFetch } from './href-prefix.js';
 import { withRetry } from './retry.js';
 import { discoverAddressBooks } from './discovery.js';
-import { ConflictError, isDavUnsupported } from '../errors.js';
-import { hasPartialRead } from './dav-fetch.js';
+import { ConflictError, DavHttpError, isDavUnsupported } from '../errors.js';
 import { transformVCard } from '../transformers/contact.js';
 import type { ContactDTO } from '../types/dtos.js';
 
@@ -36,28 +39,59 @@ function getAddressBookName(ab: DAVAddressBook): string {
   return lastSegment ? decodeURIComponent(lastSegment) : ab.url;
 }
 
+function textFilter(name: string, value: string, matchType = 'contains') {
+  return {
+    _attributes: { name },
+    'text-match': { _attributes: { collation: 'i;unicode-casemap', 'match-type': matchType }, _text: value },
+  };
+}
+
+/**
+ * Where the next page starts: an index in the list of address books and a position
+ * in that book. `version` is the CTag of the book when the page was read: a position
+ * only means the same thing if the book did not change.
+ */
+export interface ContactCursor {
+  book: number;
+  offset: number;
+  version?: string;
+}
+
+export interface ContactPage {
+  vcards: DAVVCard[];
+  nextCursor: ContactCursor | null;
+}
+
+type ReadBook = (book: DAVAddressBook, offset: number, count: number) => Promise<{ vcards: DAVVCard[]; hasMore: boolean }>;
+
+const ADDRESS_BOOK_LIST_TTL_MS = 60_000;
+
 /**
  * AddressBook service with CTag-based caching and retry
  *
  * Provides methods to list address books and fetch contacts with automatic
- * caching based on CTag (collection entity tag). Multi-addressbook aggregation
- * supported via fetchAllContacts().
+ * caching based on CTag (collection entity tag).
  */
 export class AddressBookService {
   private readonly client: DAVClientType;
   private readonly logger: Logger;
   private readonly objectCache: CollectionCache<DAVVCard>;
   private addressBooks: DAVAddressBook[];
+  private readonly config?: Config;
+  private hasJsonApi: boolean | undefined = undefined;
+  private addressBooksListedAt = 0;
 
   /**
    * Create a new AddressBookService
    *
    * @param client - CardDAV client instance (must have defaultAccountType: 'carddav')
    * @param logger - Pino logger for debug/info/error messages
+   * @param config - Auth for the JSON API of the server, skipped without it
    */
-  constructor(client: DAVClientType, logger: Logger) {
+  constructor(client: DAVClientType, logger: Logger, config?: Config) {
     this.client = client;
     this.logger = logger;
+    this.config = config;
     this.objectCache = new CollectionCache<DAVVCard>(logger);
     this.addressBooks = [];
   }
@@ -71,8 +105,9 @@ export class AddressBookService {
    * @returns Array of DAVAddressBook objects
    */
   async listAddressBooks(): Promise<DAVAddressBook[]> {
-    // Lazy initialization: only discover if not already loaded
-    if (this.addressBooks.length > 0) {
+    // Only discover if not already loaded, or if the list may be out of date
+    const stale = this.addressBooksListedAt > 0 && Date.now() - this.addressBooksListedAt >= ADDRESS_BOOK_LIST_TTL_MS;
+    if (this.addressBooks.length > 0 && !stale) {
       return this.addressBooks;
     }
 
@@ -81,6 +116,7 @@ export class AddressBookService {
       () => discoverAddressBooks(this.client, this.logger),
       this.logger
     );
+    this.addressBooksListedAt = Date.now();
 
     return this.addressBooks;
   }
@@ -166,54 +202,6 @@ export class AddressBookService {
     this.logger.info({ url: addressBook.url, count: vcards.length }, 'Fetched address book contacts');
 
     return vcards;
-  }
-
-  /**
-   * Fetch contacts from a single address book identified by display name (case-insensitive)
-   *
-   * Looks up the address book by displayName among all discovered address books.
-   *
-   * @param name - Address book display name to match (case-insensitive)
-   * @returns Array of DAVVCard from the matched address book
-   * @throws Error if no address book has this name
-   */
-  async fetchContactsByAddressBookName(name: string): Promise<DAVVCard[]> {
-    await this.listAddressBooks();
-    const match = this.addressBooks.find(
-      (ab) => getAddressBookName(ab).toLowerCase() === name.toLowerCase()
-    );
-    if (!match) {
-      throw new Error(`Address book "${name}" not found.\n\nFix: Use list_addressbooks to see the available names.`);
-    }
-    return this.fetchContacts(match);
-  }
-
-  /**
-   * Fetch contacts from ALL address books
-   *
-   * Aggregates contacts across all address books using parallel fetches.
-   * Each address book uses its own CTag-based caching.
-   *
-   * @returns Flattened array of all DAVVCard objects
-   */
-  async fetchAllContacts(): Promise<DAVVCard[]> {
-    // Ensure address books are loaded
-    await this.listAddressBooks();
-
-    // Fetch contacts from all address books in parallel
-    const results = await Promise.all(
-      this.addressBooks.map(ab => this.fetchContacts(ab))
-    );
-
-    // Flatten results
-    const flattened = results.flat();
-
-    this.logger.info(
-      { addressBookCount: this.addressBooks.length, totalContacts: flattened.length },
-      'Fetched contacts from all address books'
-    );
-
-    return flattened;
   }
 
   /**
@@ -395,29 +383,147 @@ export class AddressBookService {
    * @returns ContactDTO if found, null otherwise
    */
   async findContactByUid(uid: string, addressBookName?: string): Promise<ContactDTO | null> {
-    // Fetch raw vCard objects
-    let vcards: DAVVCard[];
-    if (addressBookName) {
-      vcards = await this.fetchContactsByAddressBookName(addressBookName);
-    } else {
-      vcards = await this.fetchAllContacts();
-    }
-
-    // Transform and search for matching UID
-    for (const vcard of vcards) {
-      // Skip if no data field (transformVCard requires it)
-      if (!vcard.data) {
-        continue;
-      }
-
-      const contactDTO = transformVCard(vcard as { url: string; etag?: string; data: string }, this.logger);
-      if (contactDTO && contactDTO.uid === uid) {
-        this.logger.debug({ uid, url: contactDTO.url }, 'Found contact by UID');
-        return contactDTO;
+    const filter = { 'prop-filter': textFilter('UID', uid, 'equals') };
+    for (const addressBook of await this.resolveAddressBooks(addressBookName)) {
+      for (const vcard of await this.queryAddressBook(addressBook, filter, 1)) {
+        const contactDTO = transformVCard(vcard as { url: string; etag?: string; data: string }, this.logger);
+        if (contactDTO && contactDTO.uid === uid) {
+          this.logger.debug({ uid, url: contactDTO.url }, 'Found contact by UID');
+          return contactDTO;
+        }
       }
     }
 
     this.logger.debug({ uid }, 'Contact not found by UID');
     return null;
+  }
+
+  /**
+   * One page of an address book, or of all of them.
+   *
+   * On Twake the server pages through its JSON API. On other servers the first
+   * call reads the book once and later pages come from the CTag cache.
+   */
+  async listContactsPage(addressBookName: string | undefined, limit: number, cursor?: ContactCursor): Promise<ContactPage> {
+    const books = await this.resolveAddressBooks(addressBookName);
+    return this.walkBooks(books, limit, cursor, async (book, offset, count) => {
+      const page = await this.readJsonPage(book, offset, count);
+      if (page) return page;
+      const all = await this.fetchContacts(book);
+      return { vcards: all.slice(offset, offset + count), hasMore: all.length > offset + count };
+    });
+  }
+
+  /**
+   * Fill a page across the address books. Each one is asked for its CTag first: that is
+   * what keeps the cache current, and what tells a position from an older page is unsafe.
+   */
+  private async walkBooks(books: DAVAddressBook[], limit: number, cursor: ContactCursor | undefined, read: ReadBook): Promise<ContactPage> {
+    const vcards: DAVVCard[] = [];
+    let offset = cursor?.offset ?? 0;
+    for (let index = cursor?.book ?? 0; index < books.length; index++) {
+      const { newCtag } = await withRetry(
+        () => this.client.isCollectionDirty({ collection: { ...books[index], ctag: '' } }),
+        this.logger
+      );
+      const version = newCtag === undefined ? undefined : String(newCtag);
+      if (cursor?.version && index === cursor.book && cursor.version !== version) {
+        addReadWarning(`The address book "${getAddressBookName(books[index])}" changed since the previous page, so a contact may be missing or repeated. Start again without the cursor to be sure.`);
+      }
+      const page = await read({ ...books[index], ctag: version }, offset, limit - vcards.length);
+      vcards.push(...page.vcards);
+      if (page.hasMore) return { vcards, nextCursor: { book: index, offset: offset + page.vcards.length, version } };
+      if (vcards.length === limit) {
+        return { vcards, nextCursor: index + 1 < books.length ? { book: index + 1, offset: 0 } : null };
+      }
+      offset = 0;
+    }
+    return { vcards, nextCursor: null };
+  }
+
+  /**
+   * One page of the contacts matching a search, filtered by the server.
+   *
+   * RFC 6352 limits a query to its first results and has no offset: each page asks for everything up to its end.
+   */
+  async searchContactsPage(
+    addressBookName: string | undefined,
+    search: { name?: string; organization?: string },
+    limit: number,
+    cursor?: ContactCursor,
+  ): Promise<ContactPage> {
+    const books = await this.resolveAddressBooks(addressBookName);
+    const filter = search.name && search.organization
+      ? { _attributes: { test: 'allof' }, 'prop-filter': [textFilter('FN', search.name), textFilter('ORG', search.organization)] }
+      : search.name
+      ? { _attributes: { test: 'anyof' }, 'prop-filter': [textFilter('FN', search.name), textFilter('N', search.name)] }
+      : { 'prop-filter': textFilter('ORG', search.organization as string) };
+    return this.walkBooks(books, limit, cursor, async (book, offset, count) => {
+      const matches = await this.queryAddressBook(book, filter, offset + count + 1);
+      return { vcards: matches.slice(offset, offset + count), hasMore: matches.length > offset + count };
+    });
+  }
+
+  private async resolveAddressBooks(addressBookName?: string): Promise<DAVAddressBook[]> {
+    const books = await this.listAddressBooks();
+    if (!addressBookName) return books;
+    const match = books.find((ab) => getAddressBookName(ab).toLowerCase() === addressBookName.toLowerCase());
+    if (!match) {
+      throw new Error(`Address book "${addressBookName}" not found.\n\nFix: Use list_addressbooks to see the available names.`);
+    }
+    return [match];
+  }
+
+  private async queryAddressBook(addressBook: DAVAddressBook, filter: object, maxResults: number): Promise<DAVVCard[]> {
+    const responses = await withRetry(
+      () => this.client.collectionQuery({
+        url: addressBook.url,
+        depth: '1',
+        defaultNamespace: 'card' as never,
+        body: {
+          'addressbook-query': {
+            _attributes: { 'xmlns:card': 'urn:ietf:params:xml:ns:carddav', 'xmlns:d': 'DAV:' },
+            'd:prop': { 'd:getetag': {}, 'card:address-data': {} },
+            filter,
+            limit: { nresults: { _text: String(maxResults) } },
+          },
+        },
+      }),
+      this.logger
+    );
+    return responses.flatMap((res) => {
+      if (!res.ok) throw new DavHttpError(res.status);
+      const data = res.props?.addressData?._cdata ?? res.props?.addressData;
+      return res.href && data
+        ? [{ url: new URL(res.href, addressBook.url).href, etag: res.props?.getetag, data }]
+        : [];
+    });
+  }
+
+  /** @returns The page, or null if this server has no JSON API */
+  private async readJsonPage(addressBook: DAVAddressBook, offset: number, count: number): Promise<{ vcards: DAVVCard[]; hasMore: boolean } | null> {
+    if (!this.config || this.hasJsonApi === false) return null;
+    const config = this.config;
+    // Sorted on the name of the object: unique, so that offsets stay exact. The fn of the API is not a stored field.
+    const url = `${addressBook.url.replace(/\/$/, '')}.json?limit=${count + 1}&offset=${offset}&sort=uri`;
+    let response!: Response;
+    const isJson = await withRetry(async () => {
+      response = await davFetch()(url, { method: 'GET', headers: { ...(await freshAuthHeaders(config)), accept: 'application/json' } });
+      return answersJson(response);
+    }, this.logger);
+    if (!isJson) {
+      this.hasJsonApi = false;
+      return null;
+    }
+
+    const items: Array<{ _links?: { self?: { href?: string } }; etag?: string; data?: unknown[] }> =
+      JSON.parse(await response.text())._embedded?.['dav:item'] ?? [];
+    const vcards = items.flatMap((item) => {
+      const filename = item._links?.self?.href?.split('/').pop();
+      return filename && item.data
+        ? [{ url: new URL(filename, addressBook.url).href, etag: item.etag, data: new ICAL.Component(item.data).toString() }]
+        : [];
+    });
+    return { vcards: vcards.slice(0, count), hasMore: items.length > count };
   }
 }

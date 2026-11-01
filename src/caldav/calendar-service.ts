@@ -8,19 +8,19 @@
  */
 
 import type { Logger } from 'pino';
-import { getCommandAuth, refreshCommandHeaders } from './client.js';
+import { freshAuthHeaders, getCommandAuth } from './client.js';
 import type { DAVCalendar, DAVCalendarObject } from 'tsdav';
 import type { DAVClientType } from './client.js';
 import type { Config } from '../config/schema.js';
 import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
-import { discoverCalendars, discoverSchedulingInbox } from './discovery.js';
+import { discoverCalendars } from './discovery.js';
 import { randomUUID } from 'node:crypto';
 import { ConflictError, DavHttpError } from '../errors.js';
 import { addReadWarning, answersJson, hasPartialRead } from './dav-fetch.js';
 import { davFetch } from './href-prefix.js';
 import { transformCalendarObject } from '../transformers/event.js';
-import { transformInvitation, type InboxResponse } from '../transformers/invitation.js';
+import { transformInvitations, type InboxResponse } from '../transformers/invitation.js';
 import { updateAttendeePartstat } from '../transformers/event-builder.js';
 import type { EventDTO, InvitationDTO } from '../types/dtos.js';
 
@@ -62,7 +62,8 @@ export class CalendarService {
   private readonly objectCache: CollectionCache<DAVCalendarObject>;
   private calendars: DAVCalendar[] = [];
   private calendarsListedAt = 0;
-  private schedulingInboxUrl: string | null | undefined = undefined;
+  private userEmails: string[] | undefined = undefined;
+  private principalPath: string | undefined = undefined;
   private hasJsonApi: boolean | undefined = undefined;
 
   /**
@@ -109,10 +110,7 @@ export class CalendarService {
    * client proxy that refreshes the command token.
    */
   async getFreshAuthHeaders(): Promise<Record<string, string>> {
-    if (this.config.DAV_AUTH_METHOD === 'command') {
-      return refreshCommandHeaders(this.config);
-    }
-    return this.getAuthHeaders();
+    return freshAuthHeaders(this.config);
   }
 
   /**
@@ -685,144 +683,124 @@ export class CalendarService {
   }
 
   /**
-   * Get the scheduling inbox URL for the authenticated user
+   * The email addresses the server knows this user by (RFC 6638), which is what
+   * ATTENDEE holds. Configuration is no substitute: a login is not always an address.
    *
-   * Discovers the inbox URL via PROPFIND on principal and caches it for the session.
-   * Returns null if the server doesn't support RFC 6638 scheduling extensions.
-   *
-   * @returns Scheduling inbox URL or null if not supported
-   * @throws Error if principal URL is not available
+   * @throws Error if the server gives none: without them, no invitation can be recognised
    */
-  async getSchedulingInboxUrl(): Promise<string | null> {
-    // Return cached value if already discovered
-    if (this.schedulingInboxUrl !== undefined) {
-      this.logger.debug({ cached: true }, 'Returning cached scheduling inbox URL');
-      return this.schedulingInboxUrl;
-    }
+  async getUserEmails(): Promise<string[]> {
+    if (this.userEmails) return this.userEmails;
 
-    // Get principal URL from client account
-    // tsdav stores this in client.account?.principalUrl after createAccount/login
-    const principalUrl = (this.client as any).account?.principalUrl;
-    if (!principalUrl) {
-      this.logger.warn('Principal URL not available - cannot discover scheduling inbox');
-      this.schedulingInboxUrl = null;
-      return null;
-    }
-
-    // Discover inbox URL with retry
-    this.schedulingInboxUrl = await withRetry(
-      () => discoverSchedulingInbox(this.client, principalUrl, this.logger),
+    const account = await withRetry(
+      () => this.client.createAccount({ account: { accountType: 'caldav' } as never }),
       this.logger
     );
-
-    if (this.schedulingInboxUrl) {
-      this.logger.info({ inboxUrl: this.schedulingInboxUrl }, 'Discovered scheduling inbox');
-    } else {
-      this.logger.info('Scheduling inbox not available (server may not support RFC 6638)');
+    const [principal] = await withRetry(
+      () => this.client.propfind({
+        url: account.principalUrl as string,
+        depth: '0',
+        props: { 'c:calendar-user-address-set': {} },
+      }),
+      this.logger
+    );
+    const hrefs = [principal?.props?.calendarUserAddressSet?.href ?? []].flat() as string[];
+    const emails = hrefs
+      .filter((href) => /^mailto:/i.test(href))
+      .map((href) => href.replace(/^mailto:/i, '').toLowerCase());
+    if (emails.length === 0) {
+      throw new Error('The server does not give the address of this user, so invitations cannot be checked.');
     }
-
-    return this.schedulingInboxUrl;
+    this.userEmails = emails;
+    this.principalPath = new URL(account.principalUrl as string).pathname.replace(/\/$/, '');
+    return emails;
   }
 
   /**
-   * List pending invitations from the scheduling inbox
-   *
-   * Queries the scheduling inbox for events where the current user
-   * is an attendee with PARTSTAT=NEEDS-ACTION (awaiting response).
-   *
-   * @param timeRange - Optional time range filter for proposed event times
-   * @returns Array of pending InvitationDTO objects, empty if none or inbox not supported
+   * The calendars this user owns. A calendar delegated by someone else holds their copy
+   * of an event: answering there would answer in their name, or be refused.
+   * A server that gives no owner is taken as a calendar of the user.
    */
-  async listPendingInvitations(timeRange?: TimeRange): Promise<InvitationDTO[]> {
-    // Get inbox URL (may return null if not supported)
-    const inboxUrl = await this.getSchedulingInboxUrl();
-    if (!inboxUrl) {
-      this.logger.info('No scheduling inbox available, returning empty invitations list');
-      return [];
-    }
+  private async getOwnCalendars(): Promise<DAVCalendar[]> {
+    await this.getUserEmails();
+    const calendars = await this.listCalendars();
+    const owned = await Promise.all(calendars.map(async (calendar) => {
+      const [response] = await withRetry(
+        () => this.client.propfind({ url: calendar.url, depth: '0', props: { 'd:owner': {} } }),
+        this.logger
+      );
+      const owner = response?.props?.owner?.href as string | undefined;
+      if (!owner) return true;
+      const ownerPath = new URL(owner, calendar.url).pathname.replace(/\/$/, '');
+      const principal = this.principalPath as string;
+      return ownerPath.endsWith(principal) || principal.endsWith(ownerPath);
+    }));
+    return calendars.filter((_, index) => owned[index]);
+  }
 
-    // Get user email from config (used for ATTENDEE matching)
-    // Use DAV_USERNAME as email (required for basic auth, may be undefined for other auth methods)
-    const userEmail = this.config.DAV_USERNAME || '';
+  /**
+   * List pending invitations
+   *
+   * A server delivers an invitation into the calendar of the attendee, with
+   * PARTSTAT=NEEDS-ACTION (RFC 6638): that is what we query, bounded by date. The
+   * scheduling inbox only holds the iTIP messages, which cannot be answered.
+   *
+   * @param timeRange - Time range of the proposed events
+   * @param userTimezone - Time zone of the user, for dates without a zone
+   * @returns Pending invitations, sorted by proposed start
+   */
+  async listPendingInvitations(timeRange: TimeRange, userTimezone?: string): Promise<InvitationDTO[]> {
+    const userEmails = await this.getUserEmails();
+    const calendars = await this.getOwnCalendars();
+    const icalTime = (iso: string) => `${new Date(iso).toISOString().slice(0, 19).replace(/[-:]/g, '')}Z`;
 
-    this.logger.debug({ inboxUrl, userEmail }, 'Querying scheduling inbox for pending invitations');
-
-    // Build calendar-query REPORT with PARTSTAT=NEEDS-ACTION filter
-    // See RFC 4791 Section 7.8.7 for param-filter syntax
-    const queryProps = {
-      'calendar-query': {
-        _attributes: {
-          'xmlns:c': 'urn:ietf:params:xml:ns:caldav',
-          'xmlns:d': 'DAV:',
-        },
-        prop: {
-          'd:getetag': {},
-          'c:calendar-data': {},
-        },
-        filter: {
-          'comp-filter': {
-            _attributes: { name: 'VCALENDAR' },
+    const invitations: InvitationDTO[] = [];
+    for (const calendar of calendars) {
+      const responses = await withRetry(
+        () => this.client.calendarQuery({
+          url: calendar.url,
+          depth: '1',
+          props: { 'd:getetag': {}, 'c:calendar-data': {} },
+          filters: {
             'comp-filter': {
-              _attributes: { name: 'VEVENT' },
-              'prop-filter': {
-                _attributes: { name: 'ATTENDEE' },
-                'text-match': {
-                  _attributes: { collation: 'i;ascii-casemap' },
-                  _text: `mailto:${userEmail}`,
-                },
-                'param-filter': {
-                  _attributes: { name: 'PARTSTAT' },
-                  'text-match': {
-                    _attributes: { collation: 'i;ascii-casemap' },
-                    _text: 'NEEDS-ACTION',
+              _attributes: { name: 'VCALENDAR' },
+              'comp-filter': {
+                _attributes: { name: 'VEVENT' },
+                'time-range': { _attributes: { start: icalTime(timeRange.start), end: icalTime(timeRange.end) } },
+                'prop-filter': {
+                  _attributes: { name: 'ATTENDEE' },
+                  'param-filter': {
+                    _attributes: { name: 'PARTSTAT' },
+                    'text-match': { _attributes: { collation: 'i;ascii-casemap' }, _text: 'NEEDS-ACTION' },
                   },
                 },
               },
             },
           },
-        },
-      },
-    };
+        }),
+        this.logger
+      );
 
-    // Execute calendar-query REPORT with retry
-    const responses = await withRetry(
-      () => this.client.calendarQuery({
-        url: inboxUrl,
-        props: queryProps,
-        depth: '1',
-      }),
-      this.logger
-    );
-
-    this.logger.debug({ count: responses.length }, 'Received inbox query responses');
-
-    // Transform responses to InvitationDTOs
-    const invitations: InvitationDTO[] = [];
-    for (const resp of responses) {
-      // Cast response to InboxResponse type
-      const inboxResp: InboxResponse = {
-        href: resp.href || '',
-        props: {
-          getetag: resp.props?.getetag as string | undefined,
-          calendarData: resp.props?.calendarData as string | undefined,
-        },
-      };
-
-      const invitation = transformInvitation(inboxResp, userEmail, this.logger);
-      if (invitation) {
-        // Apply time range filter if provided (client-side since not all servers support it)
-        if (timeRange) {
-          const start = new Date(timeRange.start);
-          const end = new Date(timeRange.end);
-          if (invitation.proposedStart >= start && invitation.proposedEnd <= end) {
-            invitations.push(invitation);
-          }
-        } else {
-          invitations.push(invitation);
+      for (const resp of responses) {
+        if (!resp.href) continue;
+        const calendarData = resp.props?.calendarData?._cdata ?? resp.props?.calendarData;
+        const inboxResp: InboxResponse = {
+          href: new URL(resp.href, calendar.url).href,
+          props: { getetag: resp.props?.getetag as string | undefined, calendarData },
+        };
+        try {
+          // The filter also matches events where only another attendee has not answered.
+          invitations.push(
+            ...transformInvitations(inboxResp, userEmails, this.logger, { timeRange, userTimezone })
+              .filter((invitation) => invitation.userPartstat === 'NEEDS-ACTION')
+          );
+        } catch (err) {
+          this.logger.warn({ err, href: resp.href }, 'Unreadable invitation');
+          addReadWarning(`The event ${resp.href.split('/').pop()} could not be read, and may be an invitation.`);
         }
       }
     }
 
+    invitations.sort((a, b) => a.proposedStart.getTime() - b.proposedStart.getTime());
     this.logger.info({ count: invitations.length }, 'Found pending invitations');
     return invitations;
   }
@@ -830,33 +808,57 @@ export class CalendarService {
   /**
    * Respond to a calendar invitation by updating PARTSTAT
    *
-   * Uses RFC 6638 implicit scheduling: PUT the updated iCalendar to the
-   * invitation URL and the server automatically sends iTIP REPLY to organizer.
+   * Uses RFC 6638 implicit scheduling: PUT the updated iCalendar to the event in
+   * the calendar and the server automatically sends iTIP REPLY to organizer.
    *
-   * @param invitationUrl - URL of the invitation in scheduling inbox (from InvitationDTO.url)
-   * @param etag - Current ETag for optimistic concurrency (from InvitationDTO.etag)
-   * @param attendeeEmail - Email of the attendee (current user)
+   * @param uid - UID of the invitation
    * @param response - Participation response (ACCEPTED, DECLINED, TENTATIVE)
-   * @param rawIcal - Raw iCalendar string (from InvitationDTO._raw)
+   * @returns The event answered
    * @throws ConflictError if invitation was modified (412)
-   * @throws Error on other failures
+   * @throws Error if there is no such event, or this user is not one of its attendees
    */
   async respondToInvitation(
-    invitationUrl: string,
-    etag: string,
-    attendeeEmail: string,
+    uid: string,
     response: 'ACCEPTED' | 'DECLINED' | 'TENTATIVE',
-    rawIcal: string
-  ): Promise<void> {
+    userTimezone?: string,
+  ): Promise<InvitationDTO> {
+    const userEmails = await this.getUserEmails();
+    const events: EventDTO[] = [];
+    for (const calendar of await this.getOwnCalendars()) {
+      events.push(...await this.queryUid(calendar, uid));
+    }
+    if (events.length === 0) {
+      throw new Error(`Invitation not found with UID: ${uid}\n\nFix: Use list_invitations to see pending invitations and their UIDs.`);
+    }
+    const attended = events.flatMap((event) => {
+      const [first] = transformInvitations(
+        { href: event.url, props: { getetag: event.etag, calendarData: event._raw } },
+        userEmails,
+        this.logger,
+        { userTimezone },
+      );
+      return first ? [{ event, invitation: first }] : [];
+    });
+    if (attended.length === 0) {
+      throw new Error(`You are not an attendee of the event with UID: ${uid}.`);
+    }
+    if (attended.length > 1) {
+      throw new Error(`The UID ${uid} is in several of your calendars, so this cannot answer for one of them. Answer it in the calendar application.`);
+    }
+    const [{ event, invitation }] = attended;
+    const invitationUrl = invitation.url;
+    const etag = invitation.etag;
+    const attendeeEmail = invitation.attendeeEmail as string;
+
     this.logger.debug(
       { url: invitationUrl, response, attendeeEmail },
       'Responding to invitation'
     );
 
     // Update PARTSTAT in iCalendar using helper function
-    const updatedIcal = updateAttendeePartstat(rawIcal, attendeeEmail, response);
+    const updatedIcal = updateAttendeePartstat(event._raw, attendeeEmail, response);
 
-    // PUT to inbox URL with ETag for optimistic concurrency. No retry: see createEvent
+    // PUT to the event with its ETag for optimistic concurrency. No retry: see createEvent
     const httpResponse = await this.client.updateCalendarObject({
       calendarObject: {
         url: invitationUrl,
@@ -877,5 +879,6 @@ export class CalendarService {
       { url: invitationUrl, response },
       'Successfully responded to invitation'
     );
+    return invitation;
   }
 }
