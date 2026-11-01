@@ -78,7 +78,7 @@ describe('DAV failures reach the model', () => {
 
   it('sends one calendar-query, without a multiget', async () => {
     dav.handler = (req) => (req.method === 'REPORT' ? calendarObjects([{ href: '/calendars/u1/Perso/a.ics', ical: icalEvent('a', '20261103T100000Z') }]) : null);
-    const result = await client.callTool({ name: 'get_events_in_range', arguments: { when: '2026-11-03 to 2026-11-04' } });
+    const result = await client.callTool({ name: 'get_events_in_range', arguments: { start: '2026-11-03', end: '2026-11-04' } });
     expect(text(result)).toContain('UID: a');
     expect(dav.requests.filter((r) => r.method === 'REPORT')).toHaveLength(1);
     expect(dav.requests.some((r) => r.body.includes('calendar-multiget'))).toBe(false);
@@ -91,20 +91,20 @@ describe('DAV failures reach the model', () => {
       const days = (Date.UTC(+range[4], +range[5] - 1, +range[6]) - Date.UTC(+range[1], +range[2] - 1, +range[3])) / 86400000;
       return days > 40 ? { status: 413 } : calendarObjects([{ href: '/calendars/u1/Perso/a.ics', ical: icalEvent('a', '20261103T100000Z') }]);
     };
-    const result = await client.callTool({ name: 'get_events_in_range', arguments: { when: '2026-11-01 to 2026-12-31' } });
+    const result = await client.callTool({ name: 'get_events_in_range', arguments: { start: '2026-11-01', end: '2026-12-31' } });
     expect(result.isError).toBeFalsy();
     expect(text(result).match(/UID: a/g)).toHaveLength(1);
   });
 
   it('reports a 413 that survives the split, never an empty result', async () => {
     dav.handler = (req) => (req.method === 'REPORT' ? { status: 413 } : null);
-    const result = await client.callTool({ name: 'get_events_in_range', arguments: { when: '2026-11-01 to 2026-11-30' } });
+    const result = await client.callTool({ name: 'get_events_in_range', arguments: { start: '2026-11-01', end: '2026-11-30' } });
     expect(result.isError).toBe(true);
     expect(text(result)).toContain('HTTP 413');
   });
 
   it('refuses a range above the maximum', async () => {
-    const result = await client.callTool({ name: 'get_events_in_range', arguments: { when: '2015-01-01 to 2020-01-01' } });
+    const result = await client.callTool({ name: 'get_events_in_range', arguments: { start: '2015-01-01', end: '2020-01-01' } });
     expect(result.isError).toBe(true);
     expect(text(result)).toContain('92 days');
     expect(dav.requests.some((r) => r.method === 'REPORT')).toBe(false);
@@ -113,7 +113,7 @@ describe('DAV failures reach the model', () => {
   it('says that more events remain, and the cursor brings them', async () => {
     const objects = Array.from({ length: 3 }, (_, i) => ({ href: `/calendars/u1/Perso/e${i}.ics`, ical: icalEvent(`e${i}`, '20261103T100000Z') }));
     dav.handler = (req) => (req.method === 'REPORT' ? calendarObjects(objects) : null);
-    const range = { when: '2026-11-03 to 2026-11-04', limit: 2 };
+    const range = { start: '2026-11-03', end: '2026-11-04', limit: 2 };
     const first = text(await client.callTool({ name: 'get_events_in_range', arguments: range }));
     expect(first).toContain('More events remain');
     const cursor = JSON.parse(/nextCursor: (\{.*\})/.exec(first)![1]);
@@ -251,7 +251,7 @@ describe('DAV failures reach the model', () => {
         if (req.method !== 'REPORT') return null;
         return multistatus(objectOk('a', ical) + objectDenied('b'));
       };
-      const result = await client.callTool({ name: 'get_events_in_range', arguments: { when: '2026-11-03 to 2026-11-04' } });
+      const result = await client.callTool({ name: 'get_events_in_range', arguments: { start: '2026-11-03', end: '2026-11-04' } });
       expect(result.isError).toBeFalsy();
       expect(text(result)).toContain('UID: a');
       const warning = (result.content as Array<{ text: string }>).at(-1)!.text;
@@ -262,7 +262,7 @@ describe('DAV failures reach the model', () => {
     it('does not mistake event text for a status', async () => {
       const tricky = ical.replace('SUMMARY:a', 'SUMMARY:HTTP/1.1 500 in the title');
       dav.handler = (req) => (req.method === 'REPORT' ? multistatus(objectOk('a', tricky)) : null);
-      const result = await client.callTool({ name: 'get_events_in_range', arguments: { when: '2026-11-03 to 2026-11-04' } });
+      const result = await client.callTool({ name: 'get_events_in_range', arguments: { start: '2026-11-03', end: '2026-11-04' } });
       expect(result.isError).toBeFalsy();
       expect(result.content as unknown[]).toHaveLength(1);
     });

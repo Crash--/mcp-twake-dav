@@ -20,74 +20,91 @@ import type { CalendarService, TimeRange } from '../../caldav/calendar-service.j
 import type { EventDTO, FreeBusyPeriod } from '../../types/dtos.js';
 import { addReadWarning } from '../../caldav/dav-fetch.js';
 import { transformCalendarObject } from '../../transformers/event.js';
+import { getMasterVevent } from '../../transformers/event-builder.js';
 import { expandRecurringEvent } from '../../transformers/recurrence.js';
+import { addWallClockDays, icalTimeToDate, wallClockMs, wallClockToInstant } from '../../transformers/timezone.js';
+
+const DAY_MS = 86_400_000;
+
+const ISO_INPUT = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
 
 /**
- * Get start of day (00:00:00.000) for a given date
+ * Read an ISO 8601 date. Without an offset it is a wall clock of `timeZone`. A
+ * date alone means the start of that day, or the end of it when `asEnd` is set.
  *
- * @param date - Date to get start of day for
- * @returns Date set to 00:00:00.000
+ * @returns Milliseconds since the epoch, or null if the value is not a valid date
  */
-export function getStartOfDay(date: Date): Date {
-  const result = new Date(date);
-  result.setHours(0, 0, 0, 0);
-  return result;
+function parseIsoInput(value: string, timeZone: string | undefined, asEnd: boolean): number | null {
+  const match = ISO_INPUT.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, offset] = match;
+  const wallClock = Date.UTC(+year, +month - 1, +day, +(hour ?? 0), +(minute ?? 0), +(second ?? 0));
+  // Date.UTC rolls February 31 over to March, 14:99 to 15:39, month 13 to next year and year 99 to 1999.
+  const read = new Date(wallClock);
+  if (
+    read.getUTCFullYear() !== +year || read.getUTCMonth() !== +month - 1 || read.getUTCDate() !== +day
+    || read.getUTCHours() !== +(hour ?? 0) || read.getUTCMinutes() !== +(minute ?? 0) || read.getUTCSeconds() !== +(second ?? 0)
+  ) return null;
+  if (offset) {
+    const instant = Date.parse(value);
+    return Number.isNaN(instant) ? null : instant;
+  }
+  return wallClockToInstant(hour === undefined && asEnd ? wallClock + DAY_MS : wallClock, timeZone);
 }
 
-/**
- * Get end of day (23:59:59.999) for a given date
- *
- * @param date - Date to get end of day for
- * @returns Date set to 23:59:59.999
- */
-export function getEndOfDay(date: Date): Date {
-  const result = new Date(date);
-  result.setHours(23, 59, 59, 999);
-  return result;
-}
-
-/**
- * Parse natural language date expression into TimeRange
- *
- * Uses chrono-node to parse expressions like:
- * - "tomorrow", "next week", "this Friday"
- * - "January 15 to January 20"
- * - "today", "this week"
- *
- * @param expression - Natural language date expression
- * @returns TimeRange with ISO 8601 start/end, or null if parsing fails
- */
-export function parseNaturalDateRange(expression: string): TimeRange | null {
-  // Parse with chrono-node (forwardDate: true for future bias, explicit reference date)
-  const results = chrono.parse(expression, new Date(), { forwardDate: true });
-
-  // Return null if chrono couldn't parse the expression
-  if (results.length === 0) {
-    return null;
-  }
-
-  // Get first parse result
-  const result = results[0];
-
-  // Determine start and end dates
-  let startDate: Date;
-  let endDate: Date;
-
-  if (result.end) {
-    // Range expression (e.g., "January 15 to January 20")
-    startDate = getStartOfDay(result.start.date());
-    endDate = getEndOfDay(result.end.date());
-  } else {
-    // Single date expression (e.g., "tomorrow") - expand to full day
-    startDate = getStartOfDay(result.start.date());
-    endDate = getEndOfDay(result.start.date());
-  }
-
-  // Return as TimeRange with ISO 8601 strings
+/** Today in `timeZone`, from its first instant to the first instant of tomorrow. */
+export function todayRange(timeZone?: string): TimeRange {
+  const midnight = Math.floor(wallClockMs(Date.now(), timeZone) / DAY_MS) * DAY_MS;
   return {
-    start: startDate.toISOString(),
-    end: endDate.toISOString(),
+    start: new Date(wallClockToInstant(midnight, timeZone)).toISOString(),
+    end: new Date(wallClockToInstant(midnight + DAY_MS, timeZone)).toISOString(),
   };
+}
+
+/**
+ * Read a date given to a write tool, natural language or ISO 8601. A date without an
+ * offset is a wall clock of `timeZone`, the same reading as check_availability, so
+ * that the time checked is the time booked.
+ *
+ * @returns The date, or null if it cannot be read
+ */
+export function parseWriteDate(text: string, timeZone?: string): Date | null {
+  const now = Date.now();
+  const offsetMinutes = Math.round((wallClockMs(now, timeZone) - Math.floor(now / 1000) * 1000) / 60_000);
+  const [result] = chrono.parse(text, { instant: new Date(now), timezone: offsetMinutes });
+  if (!result) {
+    const fallback = new Date(text);
+    return Number.isNaN(fallback.getTime()) ? null : fallback;
+  }
+  if (result.start.isCertain('timezoneOffset')) return result.start.date();
+  const part = (name: 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second') => result.start.get(name) ?? 0;
+  // The offset of today would be wrong for a date on the other side of a clock change.
+  return new Date(wallClockToInstant(
+    Date.UTC(part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second')),
+    timeZone,
+  ));
+}
+
+export const ISO_DATE_HELP =
+  'ISO 8601: 2026-11-03, 2026-11-03T14:00, or with an offset such as 2026-11-03T14:00:00Z. Without an offset, the user time zone applies.';
+
+/**
+ * Turn the `start` and `end` of a tool call into a time range. A missing end is
+ * `start` plus the default window, a missing start is now.
+ *
+ * @returns The range, or the problem to report to the model
+ */
+export function parseDateRange(
+  start: string | undefined,
+  end: string | undefined,
+  defaultDays: number,
+  timeZone?: string,
+): TimeRange | { problem: string } {
+  const startMs = start === undefined ? Date.now() : parseIsoInput(start, timeZone, false);
+  if (startMs === null) return { problem: `Could not read the start date "${start}". Use ${ISO_DATE_HELP}` };
+  const endMs = end === undefined ? startMs + defaultDays * DAY_MS : parseIsoInput(end, timeZone, true);
+  if (endMs === null) return { problem: `Could not read the end date "${end}". Use ${ISO_DATE_HELP}` };
+  return { start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
 }
 
 /**
@@ -112,8 +129,24 @@ export function formatEventTime(event: EventDTO, userTimezone?: string): string 
     timeZone: displayTimezone,
   };
 
+  const dayOf = (date: Date) => date.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    timeZone: displayTimezone,
+  });
+
+  if (event.allDay) {
+    // DTEND of an all-day event is the day after its last one.
+    const firstDay = dayOf(event.startDate);
+    const lastDay = dayOf(new Date(event.endDate.getTime() - 1));
+    return `${firstDay === lastDay ? firstDay : `${firstDay} - ${lastDay}`} (all day)`;
+  }
+
   const startStr = event.startDate.toLocaleString('en-US', options);
   const endTime = event.endDate.toLocaleString('en-US', {
+    // The model must see when an event of several days ends.
+    ...(dayOf(event.startDate) === dayOf(event.endDate) ? {} : { weekday: 'short', month: 'short', day: 'numeric' }),
     hour: 'numeric',
     minute: '2-digit',
     timeZone: displayTimezone,
@@ -244,13 +277,14 @@ export function searchEventsByAttendee(events: EventDTO[], name: string): EventD
  * @param rawEvents - Array of DAVCalendarObject from CalendarService
  * @param timeRange - ISO 8601 time range for filtering/expansion
  * @param logger - Pino logger for error/debug output
- * @param maxPerSeries - Occurrences to keep per recurring event. A page needs at most skip + limit + 1.
+ * @param userTimezone - Time zone of the user, for dates without a zone
  * @returns Sorted array of EventDTOs
  */
 export function getEventsWithRecurrenceExpansion(
   rawEvents: DAVCalendarObject[],
   timeRange: TimeRange,
   logger: Logger,
+  userTimezone?: string,
 ): EventDTO[] {
   const startDate = new Date(timeRange.start);
   const endDate = new Date(timeRange.end);
@@ -258,7 +292,7 @@ export function getEventsWithRecurrenceExpansion(
 
   for (const rawEvent of rawEvents) {
     // Transform to EventDTO
-    const eventDTO = transformCalendarObject(rawEvent, logger);
+    const eventDTO = transformCalendarObject(rawEvent, logger, userTimezone);
     if (!eventDTO) {
       // Transformation failed (logged by transformer)
       addReadWarning(`The event ${rawEvent.url.split('/').pop()} could not be read.`);
@@ -272,82 +306,77 @@ export function getEventsWithRecurrenceExpansion(
     }
 
     // Handle recurring events
-    if (eventDTO.isRecurring) {
+    if (eventDTO.isRecurring || eventDTO._raw.includes('RECURRENCE-ID')) {
       try {
         // Parse _raw iCalendar to get VEVENT component
         const jCalData = ICAL.parse(eventDTO._raw);
         const comp = new ICAL.Component(jCalData);
-        const vevent = comp.getFirstSubcomponent('vevent');
-
-        if (!vevent) {
-          logger.warn({ uid: eventDTO.uid }, 'Recurring event missing VEVENT component');
-          continue;
-        }
-
-        // Collect all VEVENT exceptions (those with RECURRENCE-ID)
-        // This handles cancelled instances (STATUS=CANCELLED) that use RECURRENCE-ID instead of EXDATE
+        // A VEVENT with a RECURRENCE-ID replaces one occurrence, whatever its place in the
+        // object. An attendee invited to a single occurrence receives no master at all.
         const allVevents = comp.getAllSubcomponents('vevent');
+        const master = allVevents.find((v: ICAL.Component) => !v.hasProperty('recurrence-id'));
         const exceptions = allVevents.filter(
           (v: ICAL.Component) => v.hasProperty('recurrence-id')
         );
-
-        // Create ICAL.Event with explicit exceptions
-        const icalEvent = new ICAL.Event(vevent, { exceptions });
 
         // Calculate event duration for occurrence generation
         const duration = eventDTO.endDate.getTime() - eventDTO.startDate.getTime();
 
         // Expand recurring event with time range boundaries
-        const occurrences = expandRecurringEvent(vevent, {
+        const occurrences = master ? expandRecurringEvent(master, {
           maxOccurrences: MAX_OCCURRENCES_PER_SERIES,
           maxDate: endDate,
           startDate: startDate,
-        });
+          lookbackMs: Math.max(duration - 1, 0),
+          userTimezone,
+        }) : [];
         if (occurrences.length >= MAX_OCCURRENCES_PER_SERIES) {
           addReadWarning(`The series ${eventDTO.uid} has more than ${MAX_OCCURRENCES_PER_SERIES} occurrences in this range, and the later ones are not shown. Ask for a shorter range.`);
         }
+        const occurrenceTimes = new Set(occurrences.map((date) => date.getTime()));
+        const overlaps = (start: Date, end: Date) =>
+          start < endDate && (end > startDate || start >= startDate);
+
+        // By instant: ical.js matches them by the text of RECURRENCE-ID, which with a
+        // TZID is a local time that an occurrence in UTC never equals.
+        const exceptionAt = new Map<number, ICAL.Component>();
+        for (const exception of exceptions) {
+          const recurrenceId = new ICAL.Event(exception).recurrenceId;
+          if (recurrenceId) exceptionAt.set(icalTimeToDate(recurrenceId, userTimezone).getTime(), exception);
+        }
+        const toOccurrence = (exception: ICAL.Component): EventDTO | null => {
+          const status = exception.getFirstPropertyValue('status');
+          const moved = new ICAL.Event(exception);
+          const start = icalTimeToDate(moved.startDate, userTimezone);
+          const end = icalTimeToDate(moved.endDate, userTimezone);
+          // A moved occurrence belongs to the window of its new date.
+          if ((status && String(status).toUpperCase() === 'CANCELLED') || !overlaps(start, end)) return null;
+          return {
+            ...eventDTO,
+            summary: moved.summary || eventDTO.summary,
+            description: moved.description || eventDTO.description,
+            location: moved.location || eventDTO.location,
+            startDate: start,
+            endDate: end,
+            allDay: moved.startDate.isDate,
+            status: status ? String(status).toUpperCase() : eventDTO.status,
+          };
+        };
 
         // Create EventDTO for each occurrence (preserving original fields, updating dates)
         for (const occurrenceDate of occurrences) {
           if (occurrenceDate >= endDate) continue;
 
-          // Check if this occurrence has an exception (RECURRENCE-ID)
-          // This handles cancelled instances that use RECURRENCE-ID + STATUS=CANCELLED
-          // IMPORTANT: Use 'true' to create UTC time, matching the RECURRENCE-ID format
-          const occurrenceTime = ICAL.Time.fromJSDate(occurrenceDate, true);
-          const details = icalEvent.getOccurrenceDetails(occurrenceTime);
-
-          // If this occurrence has an exception, check if it's cancelled
-          if (details.item !== icalEvent) {
-            // This occurrence has a RECURRENCE-ID exception
-            const exceptionVevent = details.item.component;
-            const exceptionStatus = exceptionVevent.getFirstPropertyValue('status');
-            if (exceptionStatus && String(exceptionStatus).toUpperCase() === 'CANCELLED') {
-              // Skip cancelled instances
-              logger.debug(
-                { uid: eventDTO.uid, date: occurrenceDate.toISOString() },
-                'Skipping cancelled recurring instance (RECURRENCE-ID + STATUS=CANCELLED)'
-              );
-              continue;
-            }
-
-            // For non-cancelled exceptions, use the exception's dates and summary
-            const exceptionEvent = details.item;
-            // A moved occurrence belongs to the range of its new date.
-            const movedStart = details.startDate.toJSDate();
-            if (movedStart < startDate || movedStart >= endDate) continue;
-            allEvents.push({
-              ...eventDTO,
-              summary: exceptionEvent.summary || eventDTO.summary,
-              description: exceptionEvent.description || eventDTO.description,
-              location: exceptionEvent.location || eventDTO.location,
-              startDate: details.startDate.toJSDate(),
-              endDate: details.endDate.toJSDate(),
-              status: exceptionStatus ? String(exceptionStatus).toUpperCase() : eventDTO.status,
-            });
+          const exception = exceptionAt.get(occurrenceDate.getTime());
+          if (exception) {
+            const occurrence = toOccurrence(exception);
+            if (occurrence) allEvents.push(occurrence);
           } else {
             // Normal occurrence (no exception)
-            const occurrenceEnd = new Date(occurrenceDate.getTime() + duration);
+            const occurrenceEnd = eventDTO.allDay
+              ? addWallClockDays(occurrenceDate, Math.round(duration / DAY_MS), userTimezone)
+              : new Date(occurrenceDate.getTime() + duration);
+            if (!overlaps(occurrenceDate, occurrenceEnd)) continue;
 
             allEvents.push({
               ...eventDTO,
@@ -356,6 +385,13 @@ export function getEventsWithRecurrenceExpansion(
               // Keep other fields (summary, location, attendees, etc.) from original
             });
           }
+        }
+
+        // An occurrence moved here from another window: the loop above never met its original date.
+        for (const [originalTime, exception] of exceptionAt) {
+          if (occurrenceTimes.has(originalTime)) continue;
+          const occurrence = toOccurrence(exception);
+          if (occurrence) allEvents.push(occurrence);
         }
       } catch (err) {
         logger.error(
@@ -366,8 +402,10 @@ export function getEventsWithRecurrenceExpansion(
         addReadWarning(`The recurring event ${eventDTO.uid} could not be expanded.`);
       }
     } else {
-      // Non-recurring event: include if startDate falls within time range
-      if (eventDTO.startDate >= startDate && eventDTO.startDate < endDate) {
+      // Non-recurring event: include if it overlaps the time range, as the server's time-range does
+      const overlapsRange = eventDTO.startDate < endDate
+        && (eventDTO.endDate > startDate || eventDTO.startDate >= startDate);
+      if (overlapsRange) {
         allEvents.push(eventDTO);
       }
     }
@@ -404,6 +442,8 @@ export const paginationParams = {
     start: z.string().datetime({ offset: true }),
     skip: z.number().int().min(0).max(MAX_CURSOR_SKIP),
   }).optional().describe('The value of nextCursor in the previous response. Repeat the same dates and filters with it.'),
+  // A model used to the old schema would have its dates dropped, and read the default window as its answer.
+  when: z.never({ error: 'when is gone: pass start and end in ISO 8601.' }).optional().describe('Not a parameter any more: pass start and end.'),
   // A model may repeat the name it read in the response: the schema would drop it and page 1 would come back.
   nextCursor: z.never({ error: 'Pass the value of nextCursor as the cursor parameter.' }).optional().describe('Not a parameter: pass the value of nextCursor as cursor.'),
 };
@@ -421,9 +461,10 @@ export function checkWindow(timeRange: TimeRange, cursor?: EventCursor): string 
   }
   // In calendar days: 92 of them hold 92 days and one hour across the change to winter time.
   if (end - start > MAX_WINDOW_DAYS * 86_400_000 + 3_600_000) {
-    return `The date range is longer than ${MAX_WINDOW_DAYS} days. Ask for ${MAX_WINDOW_DAYS} days at most, then for the following days in another call.`;
+    return `The date range is longer than ${MAX_WINDOW_DAYS} days. Ask for ${MAX_WINDOW_DAYS} days at most, then for the following days in another call. An event crossing the boundary of two ranges appears in both.`;
   }
-  if (cursor && (Date.parse(cursor.start) < start || Date.parse(cursor.start) >= end)) {
+  // No lower bound: an event already running at the start of the range sorts first, and can be the next one.
+  if (cursor && Date.parse(cursor.start) >= end) {
     return 'The cursor is outside the date range. Repeat the dates of the call that returned it. A call without dates follows the clock, so its range may have moved: start again without the cursor.';
   }
   return null;
@@ -567,7 +608,7 @@ export function computeBusyPeriods(events: EventDTO[], logger: Logger): FreeBusy
     try {
       const jcalData = ICAL.parse(event._raw);
       const comp = new ICAL.Component(jcalData);
-      const vevent = comp.getFirstSubcomponent('vevent');
+      const vevent = getMasterVevent(comp);
 
       if (!vevent) {
         continue;

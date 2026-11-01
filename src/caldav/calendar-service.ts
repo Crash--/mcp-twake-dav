@@ -8,7 +8,7 @@
  */
 
 import type { Logger } from 'pino';
-import { getCommandAuth } from './client.js';
+import { getCommandAuth, refreshCommandHeaders } from './client.js';
 import type { DAVCalendar, DAVCalendarObject } from 'tsdav';
 import type { DAVClientType } from './client.js';
 import type { Config } from '../config/schema.js';
@@ -24,6 +24,7 @@ import { updateAttendeePartstat } from '../transformers/event-builder.js';
 import type { EventDTO, InvitationDTO } from '../types/dtos.js';
 
 const DAY_MS = 86_400_000;
+const CALENDAR_LIST_TTL_MS = 60_000;
 
 /**
  * ISO 8601 time range for server-side calendar filtering
@@ -57,6 +58,7 @@ export class CalendarService {
   private readonly config: Config;
   private readonly objectCache: CollectionCache<DAVCalendarObject>;
   private calendars: DAVCalendar[] = [];
+  private calendarsListedAt = 0;
   private schedulingInboxUrl: string | null | undefined = undefined;
 
   /**
@@ -99,17 +101,28 @@ export class CalendarService {
   }
 
   /**
+   * Auth headers for a standalone tsdav call, which does not go through the
+   * client proxy that refreshes the command token.
+   */
+  async getFreshAuthHeaders(): Promise<Record<string, string>> {
+    if (this.config.DAV_AUTH_METHOD === 'command') {
+      return refreshCommandHeaders(this.config);
+    }
+    return this.getAuthHeaders();
+  }
+
+  /**
    * List all calendars for the authenticated user (CAL-05)
    *
-   * Uses lazy initialization: discovers once, then returns cached list.
-   * Call refreshCalendars() to force re-discovery.
+   * Keeps the list for a minute: a calendar created after startup could otherwise
+   * hold a meeting that check_availability never sees.
    *
    * @returns Array of DAVCalendar objects with url, displayName, ctag, etc.
    * @throws Error if discovery fails after retries
    */
   async listCalendars(): Promise<DAVCalendar[]> {
-    // Lazy initialization: return cached calendars if already loaded
-    if (this.calendars.length > 0) {
+    const stale = this.calendarsListedAt > 0 && Date.now() - this.calendarsListedAt >= CALENDAR_LIST_TTL_MS;
+    if (this.calendars.length > 0 && !stale) {
       this.logger.debug('Returning cached calendar list');
       return this.calendars;
     }
@@ -119,6 +132,7 @@ export class CalendarService {
       () => discoverCalendars(this.client, this.logger),
       this.logger
     );
+    this.calendarsListedAt = Date.now();
 
     return this.calendars;
   }

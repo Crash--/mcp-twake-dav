@@ -10,7 +10,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
-import { removeAlarmFromEvent, removeAllAlarmsFromEvent } from '../../transformers/event-builder.js';
+import { getMasterVevent, removeAlarmFromEvent, removeAllAlarmsFromEvent } from '../../transformers/event-builder.js';
 import ICAL from 'ical.js';
 
 /**
@@ -83,7 +83,7 @@ export function registerRemoveAlarmTool(
               // Count alarms for user-friendly error message
               const jCalData = ICAL.parse(event._raw);
               const comp = new ICAL.Component(jCalData);
-              const vevent = comp.getFirstSubcomponent('vevent');
+              const vevent = getMasterVevent(comp);
               const alarmCount = vevent ? vevent.getAllSubcomponents('valarm').length : 0;
 
               const validIndices = alarmCount > 0 ? `0 to ${alarmCount - 1}` : 'none (no reminders exist)';

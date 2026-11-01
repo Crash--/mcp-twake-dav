@@ -9,7 +9,8 @@ import ICAL from 'ical.js';
 import type { Logger } from 'pino';
 import type { DAVCalendarObject } from 'tsdav';
 import type { AttendeeInfo, EventDTO } from '../types/dtos.js';
-import { registerTimezones } from './timezone.js';
+import { getMasterVevent } from './event-builder.js';
+import { icalTimeToDate, registerTimezones } from './timezone.js';
 
 /**
  * Transform a CalDAV calendar object into a typed EventDTO
@@ -23,7 +24,8 @@ import { registerTimezones } from './timezone.js';
  */
 export function transformCalendarObject(
   davObject: DAVCalendarObject,
-  logger: Logger
+  logger: Logger,
+  userTimezone?: string,
 ): EventDTO | null {
   try {
     // Guard: require valid iCalendar data
@@ -40,8 +42,8 @@ export function transformCalendarObject(
     // (see 02-RESEARCH.md Pitfall 3 - DST conversion errors)
     registerTimezones(comp, logger);
 
-    // Extract VEVENT component
-    const vevent = comp.getFirstSubcomponent('vevent');
+    // Extract VEVENT component: the master of a series, wherever it is in the object
+    const vevent = getMasterVevent(comp);
     if (!vevent) {
       logger.debug({ url: davObject.url }, 'No VEVENT component found in iCalendar data');
       return null;
@@ -97,8 +99,9 @@ export function transformCalendarObject(
       uid: event.uid,
       summary: event.summary || '(No title)',
       description: event.description || undefined,
-      startDate: event.startDate.toJSDate(),
-      endDate: event.endDate.toJSDate(),
+      startDate: icalTimeToDate(event.startDate, userTimezone),
+      endDate: icalTimeToDate(event.endDate, userTimezone),
+      allDay: event.startDate.isDate,
       location: event.location || undefined,
       attendees,
       attendeeDetails,

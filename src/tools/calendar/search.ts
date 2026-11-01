@@ -11,7 +11,8 @@ import type { CalendarService } from '../../caldav/calendar-service.js';
 import {
   getEventsWithRecurrenceExpansion,
   formatEvent,
-  parseNaturalDateRange,
+  parseDateRange,
+  ISO_DATE_HELP,
   searchEventsByKeyword,
   searchEventsByAttendee,
   resolveCalendarEvents,
@@ -43,7 +44,8 @@ export function registerSearchEventsTool(
     {
       query: z.string().optional().describe('Keyword to search in event titles and descriptions'),
       attendee: z.string().optional().describe('Attendee name to filter by'),
-      when: z.string().optional().describe('Date range to search (defaults to next 30 days). Examples: \'this week\', \'next month\''),
+      start: z.string().optional().describe(`Start of the range to search, defaults to now. ${ISO_DATE_HELP}`),
+      end: z.string().optional().describe('End of the range to search, a date alone includes that whole day. Defaults to 30 days after the start.'),
       ...paginationParams,
       calendar: z.string().optional().describe(
         'Calendar name to search in. Use "all" to search all calendars. ' +
@@ -73,32 +75,9 @@ export function registerSearchEventsTool(
           };
         }
 
-        // Parse when parameter or default to next 30 days
-        let timeRange;
-        if (params.when) {
-          timeRange = parseNaturalDateRange(params.when);
-          if (!timeRange) {
-            logger.warn({ when: params.when }, 'Could not parse date range');
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `Could not understand the date range: '${params.when}'. Try 'this week', 'next month', or omit for default (next 30 days).`,
-                },
-              ],
-              isError: true,
-            };
-          }
-        } else {
-          // Default to next 30 days
-          const now = new Date();
-          const thirtyDaysFromNow = new Date(now);
-          thirtyDaysFromNow.setDate(now.getDate() + 30);
-
-          timeRange = {
-            start: now.toISOString(),
-            end: thirtyDaysFromNow.toISOString(),
-          };
+        const timeRange = parseDateRange(params.start, params.end, 30, userTimezone);
+        if ('problem' in timeRange) {
+          return { content: [{ type: 'text' as const, text: timeRange.problem }], isError: true };
         }
 
         const windowProblem = checkWindow(timeRange, params.cursor);
@@ -114,7 +93,7 @@ export function registerSearchEventsTool(
 
         // Transform and expand recurring events
         // Over the whole range: an occurrence moved after the cursor comes from before it.
-        let events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        let events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, userTimezone);
 
         // Apply keyword filter if query provided
         if (params.query) {

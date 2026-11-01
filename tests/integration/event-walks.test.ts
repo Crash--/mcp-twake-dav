@@ -73,7 +73,7 @@ describe('walks', () => {
     }
     throw new Error('the walk does not end');
   }
-  const range = { when: '2026-11-01 to 2027-01-29' };
+  const range = { start: '2026-11-01', end: '2027-01-29' };
   const days = (seen: string[]) => new Set(seen).size;
 
   it.each([1, 2, 7, 50])('a series of 90 days with a cancelled day gives 89, at limit %i', async (limit) => {
@@ -151,6 +151,13 @@ describe('walks', () => {
     const expected = new Date(start + DAY).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
     expect(text).toContain(expected);
     expect(later).toBeTruthy();
+  });
+
+  it('walks events already running at the start of the range', async () => {
+    const running = (i: number) => ical(['BEGIN:VEVENT', `UID:r${i}`, 'DTSTAMP:20260101T000000Z', `SUMMARY:r${i}`, `DTSTART:${basic(T0 - DAY * (i + 1))}`, `DTEND:${basic(T0 + DAY)}`, 'END:VEVENT']);
+    serve(running(0), running(1), running(2));
+    const seen = await walk('get_events_in_range', { ...range, limit: 1 });
+    expect(seen).toHaveLength(3);
   });
 
   it('refuses nextCursor as an argument, instead of giving page 1 again', async () => {

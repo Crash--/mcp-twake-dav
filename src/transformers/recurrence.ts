@@ -6,6 +6,7 @@
  */
 
 import ICAL from 'ical.js';
+import { icalTimeToDate } from './timezone.js';
 
 /**
  * Options for recurring event expansion
@@ -28,6 +29,16 @@ export interface RecurrenceOptions {
    * @default undefined
    */
   startDate?: Date;
+
+  /**
+   * Also include occurrences that start this long before startDate, without
+   * counting them toward max: they may still be running at startDate.
+   * @default 0
+   */
+  lookbackMs?: number;
+
+  /** Time zone of the user, for occurrences that are dates or have no zone. */
+  userTimezone?: string;
 }
 
 /**
@@ -53,6 +64,7 @@ export function expandRecurringEvent(
   const maxDate =
     options?.maxDate ?? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year from now
   const startDate = options?.startDate;
+  const lookbackMs = options?.lookbackMs ?? 0;
 
   // Get DTSTART property (required for recurrence expansion)
   const dtstart = vevent.getFirstPropertyValue('dtstart');
@@ -78,7 +90,7 @@ export function expandRecurringEvent(
   // Iterate through occurrences until limits reached
   while ((next = expand.next()) && count < maxOccurrences) {
     // Convert ICAL.Time to JS Date
-    const jsDate = next.toJSDate();
+    const jsDate = icalTimeToDate(next, options?.userTimezone);
 
     // Stop if occurrence is beyond maxDate
     if (jsDate > maxDate) {
@@ -86,13 +98,13 @@ export function expandRecurringEvent(
     }
 
     // Filter: skip occurrences before startDate (but don't count toward max)
-    if (startDate && jsDate < startDate) {
+    if (startDate && jsDate.getTime() < startDate.getTime() - lookbackMs) {
       continue; // Skip but don't increment count
     }
 
     // Include this occurrence
     occurrences.push(jsDate);
-    count++;
+    if (!startDate || jsDate >= startDate) count++;
   }
 
   return occurrences;

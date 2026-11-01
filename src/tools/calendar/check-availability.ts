@@ -12,13 +12,14 @@ import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { freeBusyQuery } from 'tsdav';
 import { davFetch } from '../../caldav/href-prefix.js';
-import * as chrono from 'chrono-node';
 import ICAL from 'ical.js';
 import {
-  resolveCalendarEvents,
   getEventsWithRecurrenceExpansion,
   computeBusyPeriods,
   checkWindow,
+  mergeBusyPeriods,
+  parseDateRange,
+  ISO_DATE_HELP,
 } from './utils.js';
 import type { FreeBusyPeriod } from '../../types/dtos.js';
 import { isDavUnsupported } from '../../errors.js';
@@ -80,6 +81,46 @@ function formatFreeBusyResponse(
   };
 }
 
+const FREE_BUSY_CONCURRENCY = 5;
+
+/**
+ * Busy periods of one calendar from the server.
+ *
+ * @returns The periods, or null if this server does not offer a usable free-busy-query
+ * @throws DavHttpError when the server fails: that must surface, not trigger a second round of requests
+ */
+async function queryCalendarBusy(
+  calendarService: CalendarService,
+  url: string,
+  timeRange: { start: string; end: string },
+  logger: Logger,
+): Promise<FreeBusyPeriod[] | null> {
+  try {
+    const response = await freeBusyQuery({ url, timeRange, headers: await calendarService.getFreshAuthHeaders(), fetch: davFetch() });
+    const icalData = response?.props?.calendarData?._value
+      || response?.props?.calendarData?.value
+      || response?.raw;
+    if (typeof icalData !== 'string') return null;
+
+    const vfreebusy = new ICAL.Component(ICAL.parse(icalData)).getFirstSubcomponent('vfreebusy');
+    if (!vfreebusy) return null;
+
+    const periods: FreeBusyPeriod[] = [];
+    for (const prop of vfreebusy.getAllProperties('freebusy')) {
+      const period = prop.getFirstValue() as { start?: ICAL.Time; end?: ICAL.Time } | null;
+      const type = String(prop.getParameter('fbtype') || 'BUSY');
+      if (period?.start && period?.end && type.toUpperCase() !== 'FREE') {
+        periods.push({ start: period.start.toJSDate(), end: period.end.toJSDate(), type });
+      }
+    }
+    return periods;
+  } catch (err) {
+    if (!isDavUnsupported(err) && !(err instanceof ICAL.parse.ParserError)) throw err;
+    logger.info({ err, url }, 'Server-side free-busy-query unavailable, using client-side fallback');
+    return null;
+  }
+}
+
 /**
  * Register the check_availability tool
  *
@@ -97,14 +138,10 @@ export function registerCheckAvailabilityTool(
 ): void {
   server.tool(
     'check_availability',
-    'Check calendar availability for a time range. Returns busy periods or confirms availability. Supports natural language dates (e.g., "Thursday afternoon", "next week Monday to Friday").',
+    'Check availability across all calendars, or one if named, for a time range of 92 days at most. Returns busy periods or confirms availability.',
     {
-      start: z.string().describe(
-        'Start of time range. Supports natural language (e.g., "Thursday afternoon", "tomorrow at 9am") or ISO 8601.'
-      ),
-      end: z.string().describe(
-        'End of time range. Supports natural language or ISO 8601.'
-      ),
+      start: z.string().describe(`Start of time range. ${ISO_DATE_HELP}`),
+      end: z.string().describe('End of time range, a date alone includes that whole day.'),
       calendar: z.string().optional().describe(
         'Calendar name to check. Use "all" to check all calendars. ' +
         (defaultCalendar ? `Defaults to "${defaultCalendar}".` : 'Defaults to all calendars.')
@@ -119,149 +156,54 @@ export function registerCheckAvailabilityTool(
       try {
         logger.debug({ params }, 'check_availability called');
 
-        // Parse start date - try chrono-node first, then fallback to Date constructor
-        let startDate = chrono.parseDate(params.start);
-        if (!startDate) {
-          startDate = new Date(params.start);
-          if (isNaN(startDate.getTime())) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: `Could not parse start date: "${params.start}". Please use natural language (e.g., "tomorrow at 9am") or ISO 8601 format.`,
-              }],
-              isError: true,
-            };
-          }
+        const timeRange = parseDateRange(params.start, params.end, 0, userTimezone);
+        if ('problem' in timeRange) {
+          return { content: [{ type: 'text' as const, text: timeRange.problem }], isError: true };
         }
-
-        // Parse end date - try chrono-node first, then fallback to Date constructor
-        let endDate = chrono.parseDate(params.end);
-        if (!endDate) {
-          endDate = new Date(params.end);
-          if (isNaN(endDate.getTime())) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: `Could not parse end date: "${params.end}". Please use natural language (e.g., "Friday at 5pm") or ISO 8601 format.`,
-              }],
-              isError: true,
-            };
-          }
+        const windowProblem = checkWindow(timeRange);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
         }
+        const startDate = new Date(timeRange.start);
+        const endDate = new Date(timeRange.end);
 
-        // Validate: end must be after start
-        if (endDate <= startDate) {
+        const calendars = await calendarService.listCalendars();
+        const resolvedCalendar = params.calendar === 'all'
+          ? undefined
+          : (params.calendar || defaultCalendar);
+        const targets = resolvedCalendar
+          ? calendars.filter(c => String(c.displayName || '').toLowerCase() === resolvedCalendar.toLowerCase())
+          : calendars;
+        if (targets.length === 0) {
           return {
             content: [{
               type: 'text' as const,
-              text: `End date must be after start date. Start: ${startDate.toLocaleString()}, End: ${endDate.toLocaleString()}`,
+              text: resolvedCalendar
+                ? `Calendar "${resolvedCalendar}" not found.\n\nFix: Use list_calendars to see the available names.`
+                : 'No calendars available, so availability is unknown.',
             }],
             isError: true,
           };
         }
 
-        const timeRange = {
-          start: startDate.toISOString(),
-          end: endDate.toISOString(),
-        };
-
-        const windowProblem = checkWindow(timeRange);
-        if (windowProblem) {
-          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
+        // --- Path 1: Server-side free-busy-query, one per calendar ---
+        const perCalendar: Array<FreeBusyPeriod[] | null> = [];
+        for (let i = 0; i < targets.length; i += FREE_BUSY_CONCURRENCY) {
+          perCalendar.push(...await Promise.all(
+            targets.slice(i, i + FREE_BUSY_CONCURRENCY).map((calendar) =>
+              queryCalendarBusy(calendarService, calendar.url, timeRange, logger)
+            )
+          ));
         }
-
-        // --- Path 1: Server-side free-busy-query ---
-        try {
-          const authHeaders = calendarService.getAuthHeaders();
-          const calendars = await calendarService.listCalendars();
-          const resolvedCalendar = params.calendar === 'all'
-            ? undefined
-            : (params.calendar || defaultCalendar);
-
-          let targetUrl: string;
-          if (resolvedCalendar) {
-            const match = calendars.find(c =>
-              String(c.displayName || '').toLowerCase() === resolvedCalendar.toLowerCase()
-            );
-            if (match) {
-              targetUrl = match.url;
-            } else {
-              return {
-                content: [{
-                  type: 'text' as const,
-                  text: `Calendar "${resolvedCalendar}" not found.\n\nFix: Use list_calendars to see the available names.`,
-                }],
-                isError: true,
-              };
-            }
-          } else {
-            targetUrl = calendars[0]?.url;
-            if (!targetUrl) throw new Error('No calendars available');
-          }
-
-          const response = await freeBusyQuery({
-            url: targetUrl,
-            timeRange: {
-              start: startDate.toISOString(),
-              end: endDate.toISOString(),
-            },
-            headers: authHeaders,
-            fetch: davFetch(),
-          });
-
-          // Parse VFREEBUSY response with ical.js
-          const busyPeriods: FreeBusyPeriod[] = [];
-          let hasFreeBusyData = false;
-
-          // DAVResponse has raw and props fields. An empty answer leaves no response at all.
-          const icalData = response?.props?.calendarData?._value
-            || response?.props?.calendarData?.value
-            || response?.raw
-            || '';
-
-          if (icalData && typeof icalData === 'string') {
-            try {
-              const jcalData = ICAL.parse(icalData);
-              const comp = new ICAL.Component(jcalData);
-              const vfreebusy = comp.getFirstSubcomponent('vfreebusy');
-              if (vfreebusy) {
-                hasFreeBusyData = true;
-                const fbProps = vfreebusy.getAllProperties('freebusy');
-                for (const prop of fbProps) {
-                  const period = prop.getFirstValue() as { start?: ICAL.Time; end?: ICAL.Time } | null;
-                  if (period?.start && period?.end) {
-                    busyPeriods.push({
-                      start: period.start.toJSDate(),
-                      end: period.end.toJSDate(),
-                      type: String(prop.getParameter('fbtype') || 'BUSY'),
-                    });
-                  }
-                }
-              }
-            } catch (parseErr) {
-              logger.debug({ parseErr }, 'Failed to parse VFREEBUSY response, will use fallback');
-              throw parseErr;
-            }
-          }
-
-          if (hasFreeBusyData) {
-            logger.info({ periods: busyPeriods.length }, 'Server-side free-busy-query succeeded');
-            return formatFreeBusyResponse(busyPeriods, startDate, endDate, userTimezone);
-          }
-
-          logger.info('No VFREEBUSY data in server response, using client-side fallback');
-        } catch (serverErr) {
-          // Only a server without free-busy support reaches the fallback: a failing
-          // server must surface here, not be asked again for every event.
-          if (!isDavUnsupported(serverErr) && !(serverErr instanceof ICAL.parse.ParserError)) throw serverErr;
-          logger.info({ err: serverErr }, 'Server-side free-busy-query unavailable, using client-side fallback');
+        if (perCalendar.every((periods) => periods !== null)) {
+          const merged = mergeBusyPeriods(perCalendar.flatMap((periods) => periods ?? []));
+          logger.info({ periods: merged.length, calendars: targets.length }, 'Server-side free-busy-query succeeded');
+          return formatFreeBusyResponse(merged, startDate, endDate, userTimezone);
         }
 
         // --- Path 2: Client-side fallback ---
-        const rawEvents = await resolveCalendarEvents(
-          calendarService, params.calendar, defaultCalendar, timeRange
-        );
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const rawEvents = await calendarService.fetchEventsFrom(targets, timeRange);
+        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, userTimezone);
         const busyPeriods = computeBusyPeriods(events, logger);
         // Anything not read could be what makes this time busy.
         if (hasPartialRead()) {

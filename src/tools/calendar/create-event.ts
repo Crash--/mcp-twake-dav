@@ -10,7 +10,7 @@ import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
 import { buildICalString } from '../../transformers/event-builder.js';
-import * as chrono from 'chrono-node';
+import { parseWriteDate } from './utils.js';
 
 /**
  * Register the create_event tool
@@ -65,32 +65,24 @@ export function registerCreateEventTool(
       try {
         logger.debug({ params }, 'create_event called');
 
-        // Parse start date - try chrono-node first, then fallback to Date constructor
-        let startDate = chrono.parseDate(params.start);
+        const startDate = parseWriteDate(params.start, userTimezone);
         if (!startDate) {
-          startDate = new Date(params.start);
-          if (isNaN(startDate.getTime())) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `Could not parse start date: "${params.start}". Please use natural language (e.g., "tomorrow at 2pm") or ISO 8601 format.`,
-                },
-              ],
-              isError: true,
-            };
-          }
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Could not parse start date: "${params.start}". Please use natural language (e.g., "tomorrow at 2pm") or ISO 8601 format.`,
+              },
+            ],
+            isError: true,
+          };
         }
 
-        // Parse end date - try chrono-node first, then fallback to Date constructor
-        let endDate = chrono.parseDate(params.end);
+        let endDate = parseWriteDate(params.end, userTimezone);
         if (!endDate) {
-          endDate = new Date(params.end);
-          if (isNaN(endDate.getTime())) {
-            // If end date is invalid, default to 1 hour after start
-            endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-            logger.debug({ start: startDate, end: endDate }, 'End date invalid, defaulting to 1 hour after start');
-          }
+          // If end date is invalid, default to 1 hour after start
+          endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+          logger.debug({ start: startDate, end: endDate }, 'End date invalid, defaulting to 1 hour after start');
         }
 
         // Validate: end must be after start

@@ -10,8 +10,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
-import { updateICalString, createExceptionVevent } from '../../transformers/event-builder.js';
-import * as chrono from 'chrono-node';
+import { getMasterVevent, updateICalString, createExceptionVevent } from '../../transformers/event-builder.js';
+import { parseWriteDate } from './utils.js';
 import ICAL from 'ical.js';
 
 
@@ -34,6 +34,7 @@ export function registerUpdateEventTool(
   logger: Logger,
   defaultCalendar?: string,
   recurringWrites = true,
+  userTimezone?: string,
 ): void {
   server.tool(
     'update_event',
@@ -120,44 +121,32 @@ export function registerUpdateEventTool(
         let newEndDate: Date | undefined;
 
         if (params.start !== undefined) {
-          // Try chrono-node first, then fallback to Date constructor
-          const chronoStart = chrono.parseDate(params.start);
-          if (chronoStart) {
-            newStartDate = chronoStart;
-          } else {
-            newStartDate = new Date(params.start);
-            if (isNaN(newStartDate.getTime())) {
-              return {
-                content: [
-                  {
-                    type: 'text' as const,
-                    text: `Could not parse start date: "${params.start}". Please use natural language (e.g., "tomorrow at 2pm") or ISO 8601 format.`,
-                  },
-                ],
-                isError: true,
-              };
-            }
+          newStartDate = parseWriteDate(params.start, userTimezone) ?? undefined;
+          if (!newStartDate) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Could not parse start date: "${params.start}". Please use natural language (e.g., "tomorrow at 2pm") or ISO 8601 format.`,
+                },
+              ],
+              isError: true,
+            };
           }
         }
 
         if (params.end !== undefined) {
-          // Try chrono-node first, then fallback to Date constructor
-          const chronoEnd = chrono.parseDate(params.end);
-          if (chronoEnd) {
-            newEndDate = chronoEnd;
-          } else {
-            newEndDate = new Date(params.end);
-            if (isNaN(newEndDate.getTime())) {
-              return {
-                content: [
-                  {
-                    type: 'text' as const,
-                    text: `Could not parse end date: "${params.end}". Please use natural language (e.g., "tomorrow at 2pm") or ISO 8601 format.`,
-                  },
-                ],
-                isError: true,
-              };
-            }
+          newEndDate = parseWriteDate(params.end, userTimezone) ?? undefined;
+          if (!newEndDate) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Could not parse end date: "${params.end}". Please use natural language (e.g., "tomorrow at 2pm") or ISO 8601 format.`,
+                },
+              ],
+              isError: true,
+            };
           }
         }
 
@@ -204,22 +193,15 @@ export function registerUpdateEventTool(
             };
           }
 
-          // Parse instanceDate using chrono-node
-          const chronoInstanceDate = chrono.parseDate(params.instanceDate);
-          let parsedInstanceDate: Date;
-          if (chronoInstanceDate) {
-            parsedInstanceDate = chronoInstanceDate;
-          } else {
-            parsedInstanceDate = new Date(params.instanceDate);
-            if (isNaN(parsedInstanceDate.getTime())) {
-              return {
-                content: [{
-                  type: 'text' as const,
-                  text: `Could not parse instanceDate: "${params.instanceDate}". Use natural language (e.g., "Tuesday", "next Friday") or ISO 8601 format.`,
-                }],
-                isError: true,
-              };
-            }
+          const parsedInstanceDate = parseWriteDate(params.instanceDate, userTimezone);
+          if (!parsedInstanceDate) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `Could not parse instanceDate: "${params.instanceDate}". Use natural language (e.g., "Tuesday", "next Friday") or ISO 8601 format.`,
+              }],
+              isError: true,
+            };
           }
 
           // Build changes object for exception
@@ -354,7 +336,7 @@ export function registerUpdateEventTool(
         if (event.isRecurring) {
           const jCalData = ICAL.parse(updatedICalString);
           const comp = new ICAL.Component(jCalData);
-          const vevent = comp.getFirstSubcomponent('vevent');
+          const vevent = getMasterVevent(comp);
 
           if (!vevent) {
             throw new Error('VEVENT component missing after update. This is a bug -- please report it.');
