@@ -12,6 +12,7 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 ### Changed
 - Node.js >= 20.3 is required (`AbortSignal.any`).
 - Events and contacts are read with one query that returns the data, without a multiget.
+- `tsdav` is pinned to exactly 2.5.0: the fetch guard and the reads depend on how it works inside, and a published package has no lockfile.
 
 ## [4.0.0] - 2026-11-01
 
