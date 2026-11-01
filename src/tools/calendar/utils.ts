@@ -142,7 +142,20 @@ export function parseNaturalDateRange(expression: string, now: Date = new Date()
  * @param userTimezone - Optional user timezone for display (e.g., "Europe/Paris")
  * @returns Formatted time string
  */
+/**
+ * Dates of an all-day span: "Thu, Nov 5" or "Thu, Nov 5 – Sun, Nov 8" (end is exclusive).
+ * All-day dates are local midnights, so they are formatted in the process time zone.
+ */
+export function formatAllDaySpan(start: Date, endExclusive: Date): string {
+  const fmt = (d: Date) => d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const last = new Date(endExclusive.getTime());
+  last.setDate(last.getDate() - 1);
+  return last.getTime() <= start.getTime() ? fmt(start) : `${fmt(start)} – ${fmt(last)}`;
+}
+
 export function formatEventTime(event: EventDTO, userTimezone?: string): string {
+  if (event.allDay) return `${formatAllDaySpan(event.startDate, event.endDate)} (all day)`;
+
   // Use user timezone if provided, otherwise use system default
   const displayTimezone = userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -285,7 +298,8 @@ export function searchEventsByAttendee(events: EventDTO[], name: string): EventD
 export function getEventsWithRecurrenceExpansion(
   rawEvents: DAVCalendarObject[],
   timeRange: TimeRange,
-  logger: Logger
+  logger: Logger,
+  limit = 50,
 ): EventDTO[] {
   const startDate = new Date(timeRange.start);
   const endDate = new Date(timeRange.end);
@@ -331,12 +345,22 @@ export function getEventsWithRecurrenceExpansion(
         // Calculate event duration for occurrence generation
         const duration = eventDTO.endDate.getTime() - eventDTO.startDate.getTime();
 
-        // Expand recurring event with time range boundaries
+        // Expand recurring event with time range boundaries. Occurrences that started before
+        // the range but are still running inside it count too (multi-day all-day markers,
+        // a meeting already started at the range start).
         const occurrences = expandRecurringEvent(vevent, {
           maxOccurrences: 100,
           maxDate: endDate,
-          startDate: startDate,
+          startDate: new Date(startDate.getTime() - duration),
         });
+        const occurrenceEndOf = (occurrence: Date): Date => {
+          if (!eventDTO.allDay) return new Date(occurrence.getTime() + duration);
+          // calendar days, so a span crossing a DST change still ends at midnight
+          const end = new Date(occurrence.getTime());
+          end.setDate(end.getDate() + Math.round(duration / 86400000));
+          return end;
+        };
+        const overlaps = (start: Date, end: Date) => end > startDate && start < endDate;
 
         // Create EventDTO for each occurrence (preserving original fields, updating dates)
         for (const occurrenceDate of occurrences) {
@@ -362,6 +386,7 @@ export function getEventsWithRecurrenceExpansion(
 
             // For non-cancelled exceptions, use the exception's dates and summary
             const exceptionEvent = details.item;
+            if (!overlaps(details.startDate.toJSDate(), details.endDate.toJSDate())) continue;
             allEvents.push({
               ...eventDTO,
               summary: exceptionEvent.summary || eventDTO.summary,
@@ -373,7 +398,8 @@ export function getEventsWithRecurrenceExpansion(
             });
           } else {
             // Normal occurrence (no exception)
-            const occurrenceEnd = new Date(occurrenceDate.getTime() + duration);
+            const occurrenceEnd = occurrenceEndOf(occurrenceDate);
+            if (!overlaps(occurrenceDate, occurrenceEnd)) continue;
 
             allEvents.push({
               ...eventDTO,
@@ -391,8 +417,8 @@ export function getEventsWithRecurrenceExpansion(
         // Skip this recurring event if expansion fails
       }
     } else {
-      // Non-recurring event: include if startDate falls within time range
-      if (eventDTO.startDate >= startDate && eventDTO.startDate < endDate) {
+      // Non-recurring event: include if it overlaps the time range (a multi-day event started earlier counts)
+      if (eventDTO.endDate > startDate && eventDTO.startDate < endDate) {
         allEvents.push(eventDTO);
       }
     }
@@ -401,13 +427,13 @@ export function getEventsWithRecurrenceExpansion(
   // Sort by startDate ascending
   allEvents.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
 
-  // Limit to 50 events (truncation protection)
-  const limited = allEvents.slice(0, 50);
+  // Limit the number of events (truncation protection for listings; availability needs them all)
+  const limited = allEvents.slice(0, limit);
 
-  if (allEvents.length > 50) {
+  if (allEvents.length > limit) {
     logger.warn(
-      { total: allEvents.length, returned: 50 },
-      'Event results truncated to 50 (safety limit)'
+      { total: allEvents.length, returned: limit },
+      `Event results truncated to ${limit} (safety limit)`
     );
   }
 
@@ -498,10 +524,19 @@ export function mergeBusyPeriods(periods: FreeBusyPeriod[]): FreeBusyPeriod[] {
  * @param logger - Logger for debug/error output
  * @returns Merged array of busy periods
  */
-export function computeBusyPeriods(events: EventDTO[], logger: Logger): FreeBusyPeriod[] {
+export function computeBusyPeriods(
+  events: EventDTO[],
+  logger: Logger,
+  options: { allDayBusy?: boolean } = {},
+): FreeBusyPeriod[] {
   const periods: FreeBusyPeriod[] = [];
 
   for (const event of events) {
+    // All-day events (holidays, trade shows, custody days…) are markers: not busy time unless asked
+    if (event.allDay && !options.allDayBusy) {
+      logger.debug({ uid: event.uid }, 'Skipping all-day event for busy period');
+      continue;
+    }
     try {
       const jcalData = ICAL.parse(event._raw);
       const comp = new ICAL.Component(jcalData);

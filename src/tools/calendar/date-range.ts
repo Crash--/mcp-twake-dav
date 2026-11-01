@@ -22,6 +22,9 @@ import {
  * @param calendarService - Calendar service for fetching events
  * @param logger - Pino logger
  */
+/** Events listed in one answer; the count always covers the whole range. */
+const MAX_LISTED = 50;
+
 export function registerDateRangeTool(
   server: McpServer,
   calendarService: CalendarService,
@@ -70,7 +73,7 @@ export function registerDateRangeTool(
         );
 
         // Transform and expand recurring events
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, Number.POSITIVE_INFINITY);
 
         if (events.length === 0) {
           logger.info({ when: params.when }, 'No events found for date range');
@@ -88,8 +91,12 @@ export function registerDateRangeTool(
         events.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
 
         // Format all events
-        const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
-        const result = `Events for ${params.when} (${events.length} total):\n\n${formattedEvents}`;
+        const shown = events.slice(0, MAX_LISTED);
+        const formattedEvents = shown.map((event) => formatEvent(event, userTimezone)).join('\n\n');
+        const count = events.length > MAX_LISTED
+          ? `${events.length} total, the first ${MAX_LISTED} shown: ask for a shorter range to see the rest`
+          : `${events.length} total`;
+        const result = `Events for ${params.when} (${count}):\n\n${formattedEvents}`;
 
         logger.info({ when: params.when, count: events.length }, 'Events retrieved for date range');
 

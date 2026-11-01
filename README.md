@@ -33,7 +33,7 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 ## What it brings
 
 - **Your day at a glance**: "What's on my agenda today? Where is my 3 pm meeting?"
-- **Finding a slot**: "When am I free for one hour with Marie next week?"
+- **Finding a slot**: "When am I free for one hour with Marie next week?" Busy periods come from the events themselves; all-day events (holidays, trade shows, days off) are listed apart instead of blocking whole days.
 - **Scheduling in natural language**: "Book a project review on Tuesday at 10 with Pierre and Marie" (dates like "next Monday" or "in two weeks" are understood).
 - **Reminders and invitations**: add or remove reminders, list pending invitations and answer them.
 - **Contacts**: find an email address or a phone number, create and update contact cards.

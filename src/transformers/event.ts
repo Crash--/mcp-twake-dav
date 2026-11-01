@@ -105,6 +105,7 @@ export function transformCalendarObject(
       timezone,
       status,
       isRecurring: !!recurrenceRule,
+      allDay: Boolean(event.startDate.isDate),
       recurrenceRule,
       url: davObject.url,
       etag: davObject.etag,

@@ -4,6 +4,18 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-11-01
+
+### Fixed
+- `check_availability` marked whole days busy as soon as the range met an all-day event (holiday, trade show, custody days), and a multi-day all-day event swallowed the meetings of the following days: the server free-busy report cannot tell such markers from meetings. Busy periods are now computed from the events, all-day events are listed apart, and periods ending on another day show their date.
+- Events that started before the queried range but overlap it (a multi-day all-day event, a meeting already running, a recurring occurrence) were dropped by every read tool.
+- `search_events` truncated the events to 50 before filtering by keyword, so matches beyond the first 50 events of the range were never found; `get_events_in_range` truncated silently. Both now work on the whole range and say when only the first 50 are shown.
+- `check_availability` with `calendar: "all"` only queried the first calendar.
+
+### Added
+- `check_availability` `all_day_busy` option (count all-day events as busy).
+- All-day events are shown as dates (`Thu, Nov 5 – Sun, Nov 8 (all day)`) instead of `12:00 AM - 12:00 AM`.
+
 ## [3.2.0] - 2026-11-01
 
 ### Fixed

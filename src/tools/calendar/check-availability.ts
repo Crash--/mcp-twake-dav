@@ -1,80 +1,74 @@
 /**
  * MCP tool: check_availability (ADV-01)
  *
- * Checks calendar availability for a time range using dual-path approach:
- * 1. Server-side free-busy-query REPORT (RFC 4791 s7.10)
- * 2. Client-side fallback: fetch events, filter TRANSPARENT, merge busy periods
+ * Computes busy periods from the events themselves (recurrences expanded, TRANSPARENT and
+ * CANCELLED events ignored). All-day events (holidays, trade shows, custody days…) are listed
+ * apart and do not block time unless all_day_busy is set: a server-side free-busy-query cannot
+ * tell them from meetings, so one multi-day marker made whole days look busy and hid the
+ * meetings of the following days.
  */
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
-import { freeBusyQuery } from 'tsdav';
-import { davFetch } from '../../caldav/href-prefix.js';
 import * as chrono from 'chrono-node';
-import ICAL from 'ical.js';
 import {
   resolveCalendarEvents,
   getEventsWithRecurrenceExpansion,
   computeBusyPeriods,
+  formatAllDaySpan,
 } from './utils.js';
-import type { FreeBusyPeriod } from '../../types/dtos.js';
+import type { EventDTO } from '../../types/dtos.js';
 
-/**
- * Format free/busy response for the user
- *
- * @param periods - Array of busy periods to display
- * @param queryStart - Start of the queried time range
- * @param queryEnd - End of the queried time range
- * @param userTimezone - Optional user timezone for display
- * @returns MCP tool response content
- */
-function formatFreeBusyResponse(
-  periods: FreeBusyPeriod[],
+/** Availability answer for [queryStart, queryEnd): busy periods clipped to the range, then all-day events. */
+export function buildAvailabilityText(
+  events: EventDTO[],
   queryStart: Date,
   queryEnd: Date,
-  userTimezone?: string,
-) {
-  const displayTimezone = userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const tzOptions = { timeZone: displayTimezone };
+  displayTimezone: string,
+  options: { allDayBusy: boolean },
+  logger?: Logger,
+): string {
+  const silent = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Logger;
+  const periods = computeBusyPeriods(events, logger ?? silent, { allDayBusy: options.allDayBusy })
+    .map((p) => ({ start: p.start < queryStart ? queryStart : p.start, end: p.end > queryEnd ? queryEnd : p.end }))
+    .filter((p) => p.end > p.start);
 
+  const day = (d: Date) => d.toLocaleDateString('en-US', { timeZone: displayTimezone });
+  const dateTime = (d: Date) =>
+    d.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: displayTimezone });
+  const time = (d: Date) => d.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: displayTimezone });
+  const rangeStr = `${queryStart.toLocaleString('en-US', { timeZone: displayTimezone })} to ${queryEnd.toLocaleString('en-US', { timeZone: displayTimezone })} (${displayTimezone})`;
+
+  const lines: string[] = [];
   if (periods.length === 0) {
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `You are free from ${queryStart.toLocaleString('en-US', tzOptions)} to ${queryEnd.toLocaleString('en-US', tzOptions)} (${displayTimezone}). No busy periods found.`,
-      }],
-    };
+    lines.push(`You are free from ${rangeStr}. No busy periods found.`);
+  } else {
+    lines.push(`Busy periods from ${rangeStr}:`, '');
+    periods.forEach((p, i) => {
+      const end = day(p.end) === day(p.start) ? time(p.end) : dateTime(p.end);
+      lines.push(`${i + 1}. ${dateTime(p.start)} - ${end}`);
+    });
+    lines.push('', `${periods.length} busy period(s) found.`);
   }
 
-  const periodLines = periods.map((p, i) => {
-    const startStr = p.start.toLocaleString('en-US', {
-      weekday: 'short', month: 'short', day: 'numeric',
-      hour: 'numeric', minute: '2-digit',
-      timeZone: displayTimezone,
-    });
-    const endStr = p.end.toLocaleString('en-US', {
-      hour: 'numeric', minute: '2-digit',
-      timeZone: displayTimezone,
-    });
-    return `${i + 1}. ${startStr} - ${endStr}`;
-  });
+  const allDay = events.filter((e) => e.allDay && e.status !== 'CANCELLED');
+  if (allDay.length) {
+    lines.push(
+      '',
+      options.allDayBusy
+        ? 'All-day events (counted as busy above):'
+        : 'All-day events (not counted as busy; check them, e.g. a holiday or a day off may still rule out a slot):',
+      ...allDay.map((e) => `- ${formatAllDaySpan(e.startDate, e.endDate)}: ${e.summary}`),
+    );
+  }
+  return lines.join('\n');
+}
 
-  const text = [
-    `Busy periods from ${queryStart.toLocaleString('en-US', tzOptions)} to ${queryEnd.toLocaleString('en-US', tzOptions)} (${displayTimezone}):`,
-    '',
-    ...periodLines,
-    '',
-    `${periods.length} busy period(s) found.`,
-  ].join('\n');
-
-  return {
-    content: [{
-      type: 'text' as const,
-      text,
-    }],
-  };
+function parseWhen(value: string): Date | null {
+  const d = chrono.parseDate(value) ?? new Date(value);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 /**
@@ -94,13 +88,16 @@ export function registerCheckAvailabilityTool(
 ): void {
   server.tool(
     'check_availability',
-    'Check calendar availability for a time range. Returns busy periods or confirms availability. Supports natural language dates (e.g., "Thursday afternoon", "next week Monday to Friday").',
+    'Check calendar availability for a time range. Returns the busy periods (recurring events expanded, transparent and cancelled events ignored) and lists all-day events (holidays, trade shows, days off) separately: they do not count as busy unless all_day_busy is true. Supports natural language dates (e.g., "Thursday afternoon", "tomorrow at 9am") or ISO 8601.',
     {
       start: z.string().describe(
         'Start of time range. Supports natural language (e.g., "Thursday afternoon", "tomorrow at 9am") or ISO 8601.'
       ),
       end: z.string().describe(
         'End of time range. Supports natural language or ISO 8601.'
+      ),
+      all_day_busy: z.boolean().optional().describe(
+        'Count all-day events as busy for their whole days (default false: they are listed apart).'
       ),
       calendar: z.string().optional().describe(
         'Calendar name to check. Use "all" to check all calendars. ' +
@@ -116,135 +113,34 @@ export function registerCheckAvailabilityTool(
       try {
         logger.debug({ params }, 'check_availability called');
 
-        // Parse start date - try chrono-node first, then fallback to Date constructor
-        let startDate = chrono.parseDate(params.start);
+        const startDate = parseWhen(params.start);
         if (!startDate) {
-          startDate = new Date(params.start);
-          if (isNaN(startDate.getTime())) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: `Could not parse start date: "${params.start}". Please use natural language (e.g., "tomorrow at 9am") or ISO 8601 format.`,
-              }],
-              isError: true,
-            };
-          }
+          return {
+            content: [{ type: 'text' as const, text: `Could not parse start date: "${params.start}". Please use natural language (e.g., "tomorrow at 9am") or ISO 8601 format.` }],
+            isError: true,
+          };
         }
-
-        // Parse end date - try chrono-node first, then fallback to Date constructor
-        let endDate = chrono.parseDate(params.end);
+        const endDate = parseWhen(params.end);
         if (!endDate) {
-          endDate = new Date(params.end);
-          if (isNaN(endDate.getTime())) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: `Could not parse end date: "${params.end}". Please use natural language (e.g., "Friday at 5pm") or ISO 8601 format.`,
-              }],
-              isError: true,
-            };
-          }
+          return {
+            content: [{ type: 'text' as const, text: `Could not parse end date: "${params.end}". Please use natural language (e.g., "Friday at 5pm") or ISO 8601 format.` }],
+            isError: true,
+          };
         }
-
-        // Validate: end must be after start
         if (endDate <= startDate) {
           return {
-            content: [{
-              type: 'text' as const,
-              text: `End date must be after start date. Start: ${startDate.toLocaleString()}, End: ${endDate.toLocaleString()}`,
-            }],
+            content: [{ type: 'text' as const, text: `End date must be after start date. Start: ${startDate.toLocaleString()}, End: ${endDate.toLocaleString()}` }],
             isError: true,
           };
         }
 
-        const timeRange = {
-          start: startDate.toISOString(),
-          end: endDate.toISOString(),
-        };
-
-        // --- Path 1: Server-side free-busy-query ---
-        try {
-          const authHeaders = calendarService.getAuthHeaders();
-          const calendars = await calendarService.listCalendars();
-          const resolvedCalendar = params.calendar === 'all'
-            ? undefined
-            : (params.calendar || defaultCalendar);
-
-          let targetUrl: string;
-          if (resolvedCalendar) {
-            const match = calendars.find(c =>
-              String(c.displayName || '').toLowerCase() === resolvedCalendar.toLowerCase()
-            );
-            if (match) {
-              targetUrl = match.url;
-            } else {
-              throw new Error('Calendar not found, use fallback');
-            }
-          } else {
-            targetUrl = calendars[0]?.url;
-            if (!targetUrl) throw new Error('No calendars available');
-          }
-
-          const response = await freeBusyQuery({
-            url: targetUrl,
-            timeRange: {
-              start: startDate.toISOString(),
-              end: endDate.toISOString(),
-            },
-            headers: authHeaders,
-            ...(davFetch() ? { fetch: davFetch() } : {}),
-          });
-
-          // Parse VFREEBUSY response with ical.js
-          const busyPeriods: FreeBusyPeriod[] = [];
-
-          // DAVResponse has raw and props fields
-          const icalData = response.props?.calendarData?._value
-            || response.props?.calendarData?.value
-            || response.raw
-            || '';
-
-          if (icalData && typeof icalData === 'string') {
-            try {
-              const jcalData = ICAL.parse(icalData);
-              const comp = new ICAL.Component(jcalData);
-              const vfreebusy = comp.getFirstSubcomponent('vfreebusy');
-              if (vfreebusy) {
-                const fbProps = vfreebusy.getAllProperties('freebusy');
-                for (const prop of fbProps) {
-                  const period = prop.getFirstValue() as { start?: ICAL.Time; end?: ICAL.Time } | null;
-                  if (period?.start && period?.end) {
-                    busyPeriods.push({
-                      start: period.start.toJSDate(),
-                      end: period.end.toJSDate(),
-                      type: String(prop.getParameter('fbtype') || 'BUSY'),
-                    });
-                  }
-                }
-              }
-            } catch (parseErr) {
-              logger.debug({ parseErr }, 'Failed to parse VFREEBUSY response, will use fallback');
-              throw parseErr;
-            }
-          }
-
-          if (busyPeriods.length > 0 || response.ok !== false) {
-            logger.info({ periods: busyPeriods.length }, 'Server-side free-busy-query succeeded');
-            return formatFreeBusyResponse(busyPeriods, startDate, endDate, userTimezone);
-          }
-
-          throw new Error('No VFREEBUSY data in server response');
-        } catch (serverErr) {
-          logger.info({ err: serverErr }, 'Server-side free-busy-query failed, using client-side fallback');
-        }
-
-        // --- Path 2: Client-side fallback ---
-        const rawEvents = await resolveCalendarEvents(
-          calendarService, params.calendar, defaultCalendar, timeRange
-        );
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
-        const busyPeriods = computeBusyPeriods(events, logger);
-        return formatFreeBusyResponse(busyPeriods, startDate, endDate, userTimezone);
+        const timeRange = { start: startDate.toISOString(), end: endDate.toISOString() };
+        const rawEvents = await resolveCalendarEvents(calendarService, params.calendar, defaultCalendar, timeRange);
+        // every event counts: a truncated list would report busy slots as free
+        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, Number.POSITIVE_INFINITY);
+        const displayTimezone = userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const text = buildAvailabilityText(events, startDate, endDate, displayTimezone, { allDayBusy: params.all_day_busy ?? false }, logger);
+        return { content: [{ type: 'text' as const, text }] };
       } catch (err) {
         logger.error({ err }, 'Error in check_availability');
         return {
