@@ -16,7 +16,7 @@ import type { Config } from '../config/schema.js';
 import type { Logger } from '../config/logger.js';
 import { discoverCalendars, discoverAddressBooks } from './discovery.js';
 import { CommandTokenProvider } from './token-command.js';
-import { installHrefPrefix } from './href-prefix.js';
+import { davFetch, installHrefPrefix } from './href-prefix.js';
 
 /**
  * Command auth (DAV_AUTH_METHOD=command).
@@ -121,6 +121,7 @@ export async function createCalDAVClient(config: Config): Promise<DAVClientType>
     serverUrl: config.DAV_URL,
     ...getAuthConfig(config),
     defaultAccountType: 'caldav',
+    ...(davFetch() ? { fetch: davFetch() } : {}),
   }), config);
 }
 
@@ -135,6 +136,7 @@ export async function createCardDAVClient(config: Config): Promise<DAVClientType
     serverUrl: config.DAV_URL,
     ...getAuthConfig(config),
     defaultAccountType: 'carddav',
+    ...(davFetch() ? { fetch: davFetch() } : {}),
   }), config);
 }
 

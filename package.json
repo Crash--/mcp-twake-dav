@@ -50,17 +50,17 @@
     "url": "https://github.com/linagora/mcp-twake-dav/issues"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.3",
-    "chrono-node": "^2.9.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "chrono-node": "^2.10.3",
     "ical.js": "^2.2.1",
     "pino": "^10.3.0",
-    "tsdav": "^2.1.6",
-    "zod": "^4.3.6"
+    "tsdav": "^2.5.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^25.0.10",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   },
   "author": "LINAGORA <https://linagora.com>"
 }

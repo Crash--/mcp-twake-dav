@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { rewriteHrefs, stripHrefs } from '../src/caldav/href-prefix.js';
+import { createHrefPrefixFetch, rewriteHrefs, stripHrefs } from '../src/caldav/href-prefix.js';
 
 const O = 'https://cal.example.com';
 describe('rewriteHrefs', () => {
@@ -23,5 +23,36 @@ describe('rewriteHrefs', () => {
     expect(stripHrefs(req, O, '/dav')).toBe('<d:href>/calendars/u1/c/e.ics</d:href><d:href>https://cal.example.com/x</d:href><d:href>/davx/y</d:href>');
     const resp = '<d:href>/calendars/u1/c/e.ics</d:href>';
     expect(stripHrefs(rewriteHrefs(resp, O, '/dav'), O, '/dav')).toBe(resp);
+  });
+});
+
+describe('createHrefPrefixFetch', () => {
+  const multistatus = '<d:multistatus><d:response><d:href>/calendars/u1/</d:href></d:response></d:multistatus>';
+  const mk = () => {
+    const seen: { url: string; body?: unknown }[] = [];
+    const base = (async (input: string | URL, init?: { body?: unknown }) => {
+      const url = String(input);
+      seen.push({ url, body: init?.body });
+      const status = url.endsWith('/plain') ? 200 : 207;
+      return new Response(multistatus, { status, statusText: 'x', headers: { 'content-type': 'application/xml', 'content-length': '999' } });
+    }) as unknown as typeof fetch;
+    return { seen, f: createHrefPrefixFetch(`${O}/dav/`, '/dav', base) };
+  };
+
+  it('rewrites 207 hrefs from the DAV origin and strips request hrefs', async () => {
+    const { seen, f } = mk();
+    const r = await f(`${O}/dav/calendars/u1/`, { method: 'REPORT', body: '<d:href>/dav/calendars/u1/e.ics</d:href>' });
+    expect(seen[0].body).toBe('<d:href>/calendars/u1/e.ics</d:href>');
+    expect(r.status).toBe(207);
+    expect(await r.text()).toContain('<d:href>/dav/calendars/u1/</d:href>');
+    expect(r.headers.get('content-length')).toBeNull();
+    expect(r.headers.get('content-type')).toBe('application/xml');
+  });
+
+  it('accepts URL objects and leaves other origins and statuses untouched', async () => {
+    const { f } = mk();
+    expect(await (await f(new URL(`${O}/dav/calendars/`))).text()).toContain('/dav/calendars/u1/');
+    expect(await (await f('https://other.example/x')).text()).toBe(multistatus);
+    expect(await (await f(`${O}/dav/plain`)).text()).toBe(multistatus);
   });
 });

@@ -11,6 +11,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { freeBusyQuery } from 'tsdav';
+import { davFetch } from '../../caldav/href-prefix.js';
 import * as chrono from 'chrono-node';
 import ICAL from 'ical.js';
 import {
@@ -191,6 +192,7 @@ export function registerCheckAvailabilityTool(
               end: endDate.toISOString(),
             },
             headers: authHeaders,
+            ...(davFetch() ? { fetch: davFetch() } : {}),
           });
 
           // Parse VFREEBUSY response with ical.js
