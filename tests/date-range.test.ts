@@ -32,6 +32,14 @@ describe('parseNaturalDateRange periods (weeks start on Monday)', () => {
     expect(range('le mois prochain')).toEqual(['2026-12-01', '2026-12-31']);
   });
 
+  it('expands "next N days/weeks" from today, in English and French', () => {
+    expect(range('next 7 days')).toEqual(['2026-11-01', '2026-11-07']);
+    expect(range('the next 3 days')).toEqual(['2026-11-01', '2026-11-03']);
+    expect(range('coming 2 weeks')).toEqual(['2026-11-01', '2026-11-14']);
+    expect(range('les 10 prochains jours')).toEqual(['2026-11-01', '2026-11-10']);
+    expect(range('dans les 2 prochaines semaines')).toEqual(['2026-11-01', '2026-11-14']);
+  });
+
   it('keeps single days and explicit ranges as before', () => {
     expect(range('tomorrow')).toEqual(['2026-11-02', '2026-11-02']);
     expect(range('November 3 to November 5')).toEqual(['2026-11-03', '2026-11-05']);

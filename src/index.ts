@@ -55,6 +55,9 @@ async function main() {
       DAV_ORGANIZER_EMAIL: config.DAV_ORGANIZER_EMAIL,
       DAV_ORGANIZER_NAME: config.DAV_ORGANIZER_NAME,
       DAV_RECURRING_WRITES: config.DAV_RECURRING_WRITES,
+      DAV_APPROVAL: config.DAV_APPROVAL,
+      DAV_APPROVAL_TIMEOUT_MS: config.DAV_APPROVAL_TIMEOUT_MS,
+      USER_LANGUAGE: config.USER_LANGUAGE,
     });
     logger.info('MCP server initialized');
 

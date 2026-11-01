@@ -52,7 +52,9 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 | Contacts, read | `search_contacts`, `get_contact_details`, `list_contacts`, `list_addressbooks` |
 | Contacts, write | `create_contact`, `update_contact`, `delete_contact` ⚠️ |
 
-⚠️ = deletes data or makes the server notify other people. Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) so clients can ask for confirmation.
+⚠️ = deletes data or makes the server notify other people. Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`).
+
+**Every write is approved by you first.** Before `create_event`, `update_event`, `delete_event`, `add_alarm`, `remove_alarm`, `respond_to_invitation`, `create_contact`, `update_contact` or `delete_contact` writes anything, the server itself shows you the exact action through MCP elicitation (see [Prior approval](#prior-approval)) and acts only on your explicit OK.
 
 ### Highlights
 
@@ -121,7 +123,28 @@ The server is configured through environment variables, usually set in your MCP 
 | `DAV_RECURRING_WRITES` | `false` = `update_event` / `delete_event` refuse recurring series and occurrences | `true` |
 | `DAV_HREF_PREFIX` | Path prefix stripped by a reverse proxy, e.g. `/dav` for Twake Calendar / OpenPaaS | none |
 | `USER_TIMEZONE` | IANA time zone used to display and interpret dates, e.g. `Europe/Paris` | system time zone |
+| `DAV_APPROVAL` | `elicit`: the server asks you before every write; `client`: your MCP client confirms | `elicit` |
+| `DAV_APPROVAL_TIMEOUT_MS` | How long an approval prompt waits for your answer | `600000` |
+| `USER_LANGUAGE` | Language of the approval prompts, `en` or `fr` | `en` |
 | `LOG_LEVEL` | `fatal`, `error`, `warn`, `info`, `debug`, `trace` | `info` |
+
+### Prior approval
+
+With `DAV_APPROVAL=elicit` (the default), every write tool sends the MCP client an [elicitation](https://modelcontextprotocol.io/specification/draft/client/elicitation) request before it writes, for instance:
+
+```
+Twake Calendar: Delete an event (cannot be undone)
+As: Jane DOE (your account)
+Event: Budget review · 2026-11-05 14:00 → 15:00 (Europe/Paris)
+Notified: Bob DURAND (the server may send them a cancellation)
+
+Ref. 3f9a1c · Accept to do it now, refuse to cancel.
+```
+
+- The prompt shows the dates as the server understood them, the event being changed, the attendees who will receive an e-mail, and the contact's current values.
+- The server writes only on *accept*. A refusal, a dismissal, a timeout (`DAV_APPROVAL_TIMEOUT_MS`, 10 minutes) or an error writes nothing, and the tool tells the assistant not to retry.
+- A client without elicitation support gets an error and nothing is written. Set `DAV_APPROVAL=client` only if your MCP client asks you to confirm every write tool itself.
+- `USER_LANGUAGE=fr` writes the prompts in French.
 
 ### Twake Calendar
 
@@ -187,7 +210,15 @@ mcp_servers:
       DAV_TOKEN_COMMAND: /usr/local/bin/my-token-broker token
       DAV_ORGANIZER_EMAIL: jane.doe@example.com
       DAV_RECURRING_WRITES: "false"
+      DAV_APPROVAL_TIMEOUT_MS: "330000"
+      USER_LANGUAGE: fr
+    timeout: 420            # longer than the approval wait
+    elicitation:
+      enabled: true
+      timeout: 300
 ```
+
+Hermes shows the approval prompts in the desktop app, the terminal or on your messaging platform, and declines them where nobody can answer (cron jobs, one-shot queries).
 
 ### Other MCP clients
 
@@ -197,7 +228,7 @@ Any client that can launch a stdio MCP server works: command `npx`, arguments `-
 
 Creating, moving or deleting an event with attendees makes the server **email them in your name**, and contact deletion is final (CardDAV has no trash). For an assistant that acts on its own:
 
-- ask it to confirm the recap (title, date, place, attendees) before `create_event`, `update_event` or `delete_event`;
+- keep `DAV_APPROVAL=elicit` (the default): every write waits for your OK on the exact action, whatever the assistant decides;
 - set `DAV_RECURRING_WRITES=false` and edit recurring series in Twake Calendar;
 - filter out `respond_to_invitation` (and `delete_contact` if not needed) in your MCP client, for example with Hermes Agent:
 
@@ -223,6 +254,8 @@ Event descriptions and contact notes may be written by third parties (prompt inj
 | Symptom | Fix |
 |---|---|
 | `Configuration validation failed` | Set the variables required by your `DAV_AUTH_METHOD` (see *Authentication*). |
+| `Not done: this MCP client cannot ask the user for approval` | Your MCP client does not support elicitation: use one that does, or `DAV_APPROVAL=client` if it confirms writes itself. |
+| `Not done: no answer to the approval request` | The prompt timed out or nobody could answer (cron, one-shot query): nothing was written. |
 | `401 Unauthorized` | Check the credentials; with a token, check that it is valid and not expired. |
 | `URL must use HTTPS` | Use `https://` (HTTP is only accepted for `localhost` / `127.0.0.1`). |
 | `cannot find homeUrl` / empty calendars | The server sits behind a path prefix: set `DAV_HREF_PREFIX` (e.g. `/dav`). |

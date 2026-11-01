@@ -10,6 +10,7 @@ import type { Logger } from 'pino';
 import type { AddressBookService } from '../../caldav/addressbook-service.js';
 import { ConflictError } from '../../errors.js';
 import { buildVCardString } from '../../transformers/contact-builder.js';
+import { approverFor } from '../../approval.js';
 
 /**
  * Register the create_contact tool
@@ -58,6 +59,17 @@ export function registerCreateContactTool(
           organization: params.organization,
         });
 
+        const refused = await approverFor(server).gate({
+          action: 'create_contact',
+          details: [
+            ['addressbook', resolvedAddressBook],
+            ['name', params.name],
+            ['email', params.email],
+            ['phone', params.phone],
+            ['organization', params.organization],
+          ],
+        });
+        if (refused) return refused;
         // Create contact
         const result = await addressBookService.createContact(vCardString, resolvedAddressBook);
 

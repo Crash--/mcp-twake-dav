@@ -11,6 +11,7 @@ import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
 import type { InvitationDTO } from '../../types/dtos.js';
+import { approverFor } from '../../approval.js';
 
 /**
  * Register the respond_to_invitation tool
@@ -81,6 +82,16 @@ export function registerRespondInvitationTool(
           };
         }
 
+        const refused = await approverFor(server).gate({
+          action: 'respond_to_invitation',
+          details: [
+            ['event', `${invitation.summary} · ${approverFor(server).span(invitation.proposedStart, invitation.proposedEnd)}`],
+            ['location', invitation.location],
+            ['organizer', invitation.organizer.name ? `${invitation.organizer.name} <${invitation.organizer.email}>` : invitation.organizer.email],
+            ['answer', `${approverFor(server).label(params.response === 'accept' ? 'accepted' : params.response === 'decline' ? 'declined' : 'tentative')} (${approverFor(server).label('reply_sent')})`],
+          ],
+        });
+        if (refused) return refused;
         // Respond to invitation
         await calendarService.respondToInvitation(
           invitation.url,

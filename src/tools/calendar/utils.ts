@@ -62,6 +62,20 @@ export function getEndOfDay(date: Date): Date {
  */
 function parsePeriod(expression: string, now: Date): { start: Date; end: Date } | null {
   const e = expression.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+  // "next 7 days", "the next 2 weeks", "les 10 prochains jours": today and the N-1 days after (chrono
+  // would read "next 7 days" as the single day in 7 days).
+  const ahead =
+    /^(?:the )?(?:next|coming|upcoming) (\d{1,3}) (day|days|week|weeks)$/.exec(e) ??
+    /^(?:(?:dans )?les )?(\d{1,3}) (?:prochains|prochaines) (jours|semaines)$/.exec(e);
+  if (ahead) {
+    const n = Number(ahead[1]) * (/^(week|semaine)/.test(ahead[2]) ? 7 : 1);
+    if (n > 0) {
+      const start = getStartOfDay(now);
+      const last = new Date(start);
+      last.setDate(start.getDate() + n - 1);
+      return { start, end: getEndOfDay(last) };
+    }
+  }
   const patterns: [RegExp, 'week' | 'month' | 'weekend', number][] = [
     [/^(this|current) week$|^(cette|la) semaine( en cours)?$/, 'week', 0],
     [/^next week$|^(la )?semaine prochaine$/, 'week', 1],

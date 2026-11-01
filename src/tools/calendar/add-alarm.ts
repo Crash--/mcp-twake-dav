@@ -11,6 +11,7 @@ import type { Logger } from 'pino';
 import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
 import { addAlarmToEvent } from '../../transformers/event-builder.js';
+import { approverFor } from '../../approval.js';
 
 /**
  * Register the add_alarm tool
@@ -68,6 +69,14 @@ export function registerAddAlarmTool(
         // Add alarm to event (addAlarmToEvent handles trigger parsing internally)
         const updatedICalString = addAlarmToEvent(event._raw, params.trigger);
 
+        const refused = await approverFor(server).gate({
+          action: 'add_alarm',
+          details: [
+            ['event', approverFor(server).eventLine(event)],
+            ['reminder', params.trigger],
+          ],
+        });
+        if (refused) return refused;
         // Update event using etag for optimistic concurrency
         await calendarService.updateEvent(event.url, updatedICalString, event.etag!);
 

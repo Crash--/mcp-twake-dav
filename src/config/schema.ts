@@ -62,6 +62,10 @@ export const envSchema = z.object({
   DAV_DEFAULT_CALENDAR: z.string().optional(),
   DAV_DEFAULT_ADDRESSBOOK: z.string().optional(),
   USER_TIMEZONE: z.string().optional(),
+  // elicit = the server asks the user to approve every write (MCP elicitation); client = the MCP client confirms
+  DAV_APPROVAL: z.enum(['elicit', 'client']).default('elicit'),
+  DAV_APPROVAL_TIMEOUT_MS: z.coerce.number().int().positive().default(600000),
+  USER_LANGUAGE: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.DAV_AUTH_METHOD === 'basic') {
     if (!data.DAV_USERNAME) {

@@ -13,6 +13,7 @@ import { ConflictError } from '../../errors.js';
 import { updateICalString, createExceptionVevent } from '../../transformers/event-builder.js';
 import * as chrono from 'chrono-node';
 import ICAL from 'ical.js';
+import { approverFor } from '../../approval.js';
 
 
 /** True when the event is a recurring series or an occurrence of one. */
@@ -282,6 +283,22 @@ export function registerUpdateEventTool(
             attendeeWarning = `\n\nNote: This event has attendees (${attendeeList}). The server may send update notifications.`;
           }
 
+          const refused = await approverFor(server).gate({
+            action: 'update_occurrence',
+            details: [
+              ['event', approverFor(server).eventLine(event)],
+              ['occurrence', approverFor(server).date(parsedInstanceDate, event.allDay)],
+              ['changes', [
+                params.title !== undefined ? `title → ${params.title}` : undefined,
+                newStartDate !== undefined ? `start → ${approverFor(server).date(newStartDate)}` : undefined,
+                newEndDate !== undefined ? `end → ${approverFor(server).date(newEndDate)}` : undefined,
+                params.location !== undefined ? `location → ${params.location}` : undefined,
+                params.description !== undefined ? `description → ${params.description}` : undefined,
+              ].filter(Boolean).join('\n')],
+              ['notified', approverFor(server).notified(event.attendees, 'update_sent')],
+            ],
+          });
+          if (refused) return refused;
           // Update event with exception added
           await calendarService.updateEvent(event.url, updatedICalString, event.etag!);
 
@@ -373,6 +390,22 @@ export function registerUpdateEventTool(
           attendeeWarning = `\n\nNote: This event has attendees (${attendeeList}). The server may send update notifications to all attendees.`;
         }
 
+        const refused = await approverFor(server).gate({
+          action: 'update_event',
+          details: [
+            ['event', approverFor(server).eventLine(event)],
+            ['changes', [
+              params.title !== undefined ? `title → ${params.title}` : undefined,
+              newStartDate !== undefined ? `start → ${approverFor(server).date(newStartDate)}` : undefined,
+              newEndDate !== undefined ? `end → ${approverFor(server).date(newEndDate)}` : undefined,
+              params.location !== undefined ? `location → ${params.location}` : undefined,
+              params.description !== undefined ? `description → ${params.description}` : undefined,
+            ].filter(Boolean).join('\n')],
+            ['recurrence', event.isRecurring ? event.recurrenceRule : undefined],
+            ['notified', approverFor(server).notified(event.attendees, 'update_sent')],
+          ],
+        });
+        if (refused) return refused;
         // Update event using etag for optimistic concurrency
         await calendarService.updateEvent(event.url, updatedICalString, event.etag!);
 

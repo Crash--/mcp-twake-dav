@@ -4,6 +4,18 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-11-01
+
+### Added
+- Prior approval of every write by the user, asked by the server itself through MCP elicitation (`DAV_APPROVAL=elicit`, the default): `create_event`, `update_event`, `delete_event`, `add_alarm`, `remove_alarm`, `respond_to_invitation`, `create_contact`, `update_contact` and `delete_contact` show the exact action (dates as parsed, current event or contact, attendees who will receive an e-mail, a unique reference) and write only on accept. Prompts in English or French (`USER_LANGUAGE`), `DAV_APPROVAL_TIMEOUT_MS`.
+- `scripts/live-approval.mjs`: live test of the approvals on a real calendar and address book.
+
+### Changed
+- **Breaking**: with an MCP client that does not support elicitation, write tools now return an error and write nothing. Set `DAV_APPROVAL=client` to keep the 3.x behaviour when your client confirms writes itself.
+
+### Fixed
+- "next 7 days", "the next 2 weeks", "les 10 prochains jours" covered a single day (chrono-node reads "next 7 days" as the day in 7 days): they now cover today and the following days.
+
 ## [3.3.0] - 2026-11-01
 
 ### Fixed

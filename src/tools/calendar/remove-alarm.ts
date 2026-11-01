@@ -12,6 +12,7 @@ import type { CalendarService } from '../../caldav/calendar-service.js';
 import { ConflictError } from '../../errors.js';
 import { removeAlarmFromEvent, removeAllAlarmsFromEvent } from '../../transformers/event-builder.js';
 import ICAL from 'ical.js';
+import { approverFor } from '../../approval.js';
 
 /**
  * Register the remove_alarm tool
@@ -101,6 +102,14 @@ export function registerRemoveAlarmTool(
           }
         }
 
+        const refused = await approverFor(server).gate({
+          action: 'remove_alarm',
+          details: [
+            ['event', approverFor(server).eventLine(event)],
+            ['reminder', params.alarmIndex === 'all' ? approverFor(server).label('all') : `#${params.alarmIndex}`],
+          ],
+        });
+        if (refused) return refused;
         // Update event using etag for optimistic concurrency
         await calendarService.updateEvent(event.url, updatedICalString, event.etag!);
 

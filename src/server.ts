@@ -35,6 +35,9 @@ export function createServer(
     DAV_ORGANIZER_EMAIL?: string;
     DAV_ORGANIZER_NAME?: string;
     DAV_RECURRING_WRITES?: 'true' | 'false';
+    DAV_APPROVAL?: 'elicit' | 'client';
+    DAV_APPROVAL_TIMEOUT_MS?: number;
+    USER_LANGUAGE?: string;
   },
 ): McpServer {
   // Initialize MCP server

@@ -13,6 +13,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { CalendarService } from '../caldav/calendar-service.js';
 import type { AddressBookService } from '../caldav/addressbook-service.js';
+import { setApprover } from '../approval.js';
 import { registerNextEventTool } from './calendar/next-event.js';
 import { registerTodaysScheduleTool } from './calendar/today.js';
 import { registerDateRangeTool } from './calendar/date-range.js';
@@ -79,8 +80,20 @@ export function registerAllTools(
     DAV_ORGANIZER_EMAIL?: string;
     DAV_ORGANIZER_NAME?: string;
     DAV_RECURRING_WRITES?: 'true' | 'false';
+    DAV_APPROVAL?: 'elicit' | 'client';
+    DAV_APPROVAL_TIMEOUT_MS?: number;
+    USER_LANGUAGE?: string;
   },
 ): void {
+  // Prior approval of every write (MCP elicitation), see src/approval.ts
+  setApprover(server, {
+    mode: config?.DAV_APPROVAL ?? 'elicit',
+    language: (config?.USER_LANGUAGE ?? '').toLowerCase().startsWith('fr') ? 'fr' : 'en',
+    timeoutMs: config?.DAV_APPROVAL_TIMEOUT_MS ?? 600_000,
+    as: config?.DAV_ORGANIZER_NAME || config?.DAV_ORGANIZER_EMAIL || config?.DAV_USERNAME,
+    timeZone: userTimezone,
+  });
+
   // Register calendar query tools (Phase 4)
   registerNextEventTool(server, calendarService, logger, defaultCalendar, userTimezone);
   registerTodaysScheduleTool(server, calendarService, logger, defaultCalendar, userTimezone);
