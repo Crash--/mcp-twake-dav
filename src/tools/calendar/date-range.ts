@@ -13,6 +13,12 @@ import {
   formatEvent,
   parseNaturalDateRange,
   resolveCalendarEvents,
+  paginationParams,
+  checkWindow,
+  pageWindow,
+  paginateEvents,
+  formatPageFooter,
+  MAX_WINDOW_DAYS,
 } from './utils.js';
 
 /**
@@ -22,9 +28,6 @@ import {
  * @param calendarService - Calendar service for fetching events
  * @param logger - Pino logger
  */
-/** Events listed in one answer; the count always covers the whole range. */
-const MAX_LISTED = 50;
-
 export function registerDateRangeTool(
   server: McpServer,
   calendarService: CalendarService,
@@ -34,9 +37,10 @@ export function registerDateRangeTool(
 ): void {
   server.tool(
     'get_events_in_range',
-    'Get calendar events for a date range. Accepts natural language like \'this week\', \'next month\', \'tomorrow\', or specific dates like \'2026-02-01 to 2026-02-07\'. Optionally filter by calendar name.',
+    `Get calendar events for a date range, sorted by start, one page at a time. Accepts natural language like 'this week', 'next month', 'tomorrow', or specific dates like '2026-02-01 to 2026-02-07', ${MAX_WINDOW_DAYS} days at most. When the response has a nextCursor, more events remain. Optionally filter by calendar name.`,
     {
       when: z.string().describe('Date range expression: \'this week\', \'next month\', \'tomorrow\', \'January 15 to January 20\', etc.'),
+      ...paginationParams,
       calendar: z.string().optional().describe(
         'Calendar name to search in. Use "all" to search all calendars. ' +
         (defaultCalendar ? `Defaults to "${defaultCalendar}".` : 'Defaults to all calendars.')
@@ -67,13 +71,20 @@ export function registerDateRangeTool(
           };
         }
 
+        const windowProblem = checkWindow(timeRange, params.cursor);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
+        }
+
         // Fetch events based on calendar param / default / all
         const rawEvents = await resolveCalendarEvents(
-          calendarService, params.calendar, defaultCalendar, timeRange
+          calendarService, params.calendar, defaultCalendar, pageWindow(timeRange, params.cursor)
         );
 
         // Transform and expand recurring events
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, Number.POSITIVE_INFINITY);
+        // Over the whole range: an occurrence moved after the cursor comes from before it.
+        const expanded = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
+        const { page: events, nextCursor, more } = paginateEvents(expanded, params.limit, params.cursor);
 
         if (events.length === 0) {
           logger.info({ when: params.when }, 'No events found for date range');
@@ -87,16 +98,9 @@ export function registerDateRangeTool(
           };
         }
 
-        // Sort by startDate ascending (already sorted, but explicit)
-        events.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
-
         // Format all events
-        const shown = events.slice(0, MAX_LISTED);
-        const formattedEvents = shown.map((event) => formatEvent(event, userTimezone)).join('\n\n');
-        const count = events.length > MAX_LISTED
-          ? `${events.length} total, the first ${MAX_LISTED} shown: ask for a shorter range to see the rest`
-          : `${events.length} total`;
-        const result = `Events for ${params.when} (${count}):\n\n${formattedEvents}`;
+        const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
+        const result = `Events for ${params.when} (${events.length} in this page):\n\n${formattedEvents}${formatPageFooter(nextCursor, more)}`;
 
         logger.info({ when: params.when, count: events.length }, 'Events retrieved for date range');
 
