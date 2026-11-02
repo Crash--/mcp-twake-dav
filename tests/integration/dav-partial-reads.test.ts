@@ -109,6 +109,31 @@ describe('partial reads', () => {
     expect(text).toContain('unknown');
   });
 
+  describe('an object that cannot be read', () => {
+    const unreadable = calendarObjects([{ href: '/calendars/u1/Perso/bad.ics', ical: 'not ical' }]);
+
+    it('is named next to the result', async () => {
+      dav.handler = (req) => (req.method === 'REPORT' ? unreadable : null);
+      const { text } = await call('get_todays_schedule', { calendar: 'Perso' });
+      expect(text).toContain('incomplete');
+      expect(text).toContain('bad.ics');
+    });
+
+    it('does not read as free', async () => {
+      dav.handler = (req) => (req.method === 'REPORT' ? unreadable : null);
+      const { text } = await call('check_availability', { start: '2020-01-01T00:00:00Z', end: '2020-01-02T00:00:00Z', calendar: 'Perso' });
+      expect(text).not.toContain('You are free');
+      expect(text).toContain('unknown');
+    });
+  });
+
+  it('says when a series has more occurrences than it reads', async () => {
+    const series = ical.replace('DURATION:PT1H', 'DURATION:PT1S\r\nRRULE:FREQ=MINUTELY').replace(/DTSTART:\S+/, 'DTSTART:20200101T000000Z');
+    dav.handler = (req) => (req.method === 'REPORT' ? calendarObjects([{ href: '/calendars/u1/Perso/busy.ics', ical: series }]) : null);
+    const { text } = await call('check_availability', { start: '2020-01-01T00:00:00Z', end: '2020-02-01T00:00:00Z', calendar: 'Perso' });
+    expect(text).toContain('unknown');
+  });
+
   describe('an object in 200 without data', () => {
     const noData = calendarObjects([{ href: '/calendars/u1/Perso/empty.ics', ical: '' }]);
 

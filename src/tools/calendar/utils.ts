@@ -17,6 +17,7 @@ import type { Logger } from 'pino';
 import type { DAVCalendarObject } from 'tsdav';
 import type { CalendarService, TimeRange } from '../../caldav/calendar-service.js';
 import type { EventDTO, FreeBusyPeriod } from '../../types/dtos.js';
+import { addReadWarning } from '../../caldav/dav-fetch.js';
 import { transformCalendarObject } from '../../transformers/event.js';
 import { expandRecurringEvent } from '../../transformers/recurrence.js';
 
@@ -291,6 +292,9 @@ export function searchEventsByAttendee(events: EventDTO[], name: string): EventD
   });
 }
 
+// shortcut: a series above this in one range is cut with a warning, raise it if a real calendar needs it
+const MAX_OCCURRENCES_PER_SERIES = 10_000;
+
 /**
  * Get events with recurrence expansion
  *
@@ -324,6 +328,7 @@ export function getEventsWithRecurrenceExpansion(
     const eventDTO = transformCalendarObject(rawEvent, logger);
     if (!eventDTO) {
       // Transformation failed (logged by transformer)
+      addReadWarning(`The event ${rawEvent.url.split('/').pop()} could not be read.`);
       continue;
     }
 
@@ -363,10 +368,13 @@ export function getEventsWithRecurrenceExpansion(
         // the range but are still running inside it count too (multi-day all-day markers,
         // a meeting already started at the range start).
         const occurrences = expandRecurringEvent(vevent, {
-          maxOccurrences: 100,
+          maxOccurrences: MAX_OCCURRENCES_PER_SERIES,
           maxDate: endDate,
           startDate: new Date(startDate.getTime() - duration),
         });
+        if (occurrences.length >= MAX_OCCURRENCES_PER_SERIES) {
+          addReadWarning(`The series ${eventDTO.uid} has more than ${MAX_OCCURRENCES_PER_SERIES} occurrences in this range, and the later ones are not listed.`);
+        }
         const occurrenceEndOf = (occurrence: Date): Date => {
           if (!eventDTO.allDay) return new Date(occurrence.getTime() + duration);
           // calendar days, so a span crossing a DST change still ends at midnight
@@ -428,7 +436,8 @@ export function getEventsWithRecurrenceExpansion(
           { err, uid: eventDTO.uid },
           'Failed to expand recurring event'
         );
-        // Skip this recurring event if expansion fails
+        // Skip this recurring event if expansion fails, and say so
+        addReadWarning(`The recurring event ${eventDTO.uid} could not be expanded.`);
       }
     } else {
       // Non-recurring event: include if it overlaps the time range (a multi-day event started earlier counts)
