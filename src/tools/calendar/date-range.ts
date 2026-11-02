@@ -100,7 +100,7 @@ export function registerDateRangeTool(
         }
 
         // Format all events
-        const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
+        const formattedEvents = events.map((event) => formatEvent(event, userTimezone, params.all_attendees)).join('\n\n');
         const result = `Events for ${params.when} (${events.length} in this page):\n\n${formattedEvents}${formatPageFooter(nextCursor, more)}`;
 
         logger.info({ when: params.when, count: events.length }, 'Events retrieved for date range');

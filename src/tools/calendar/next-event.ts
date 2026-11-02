@@ -83,7 +83,7 @@ export function registerNextEventTool(
         upcomingEvents.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
         const nextEvent = upcomingEvents[0];
 
-        const formattedEvent = formatEvent(nextEvent, userTimezone);
+        const formattedEvent = formatEvent(nextEvent, userTimezone, true);
         logger.info({ uid: nextEvent.uid }, 'Next event found');
 
         return {

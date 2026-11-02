@@ -175,6 +175,21 @@ describe('walks', () => {
     });
   });
 
+  describe('the attendees of an event', () => {
+    const attendees = Array.from({ length: 12 }, (_, i) => `ATTENDEE;PARTSTAT=ACCEPTED:mailto:p${i}@example.com`);
+    const crowded = () => serve(ical(['BEGIN:VEVENT', 'UID:big', 'DTSTAMP:20260101T000000Z', 'SUMMARY:big', `DTSTART:${basic(T0)}`, `DTEND:${basic(T0 + 1000)}`, ...attendees, 'END:VEVENT']));
+
+    it('all_attendees lists the ones a list leaves out', async () => {
+      crowded();
+      const shortList = textOf(await client.callTool({ name: 'get_events_in_range', arguments: range }));
+      expect(shortList).toContain('all_attendees with a small limit lists them');
+      expect(shortList).not.toContain('p11@example.com');
+      const full = textOf(await client.callTool({ name: 'get_events_in_range', arguments: { ...range, all_attendees: true } }));
+      expect(full).toContain('p11@example.com');
+      expect(full).not.toContain('not shown');
+    });
+  });
+
   it.each([1, 2, 7, 50])('a series of 90 days with a cancelled day gives 89, at limit %i', async (limit) => {
     serve(ical(master(90), cancelled(10)));
     const seen = await walk('get_events_in_range', { ...range, limit });
