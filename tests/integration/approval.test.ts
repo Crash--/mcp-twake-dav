@@ -38,6 +38,7 @@ function setup(opts: { answer?: 'accept' | 'decline' | 'cancel'; elicitation?: b
     updateEvent: async () => (writes.push('updateEvent'), { url: event.url, etag: '"3"' }),
     deleteEvent: async () => void writes.push('deleteEvent'),
     listPendingInvitations: async () => [{ uid: 'inv-1', summary: 'Comité', organizer: { name: 'Bob DURAND', email: 'bob.durand@example.com' }, proposedStart: start, proposedEnd: end, userPartstat: 'NEEDS-ACTION', url: 'x', etag: 'y' }],
+    findInvitation: async (uid: string) => (await calendarService.listPendingInvitations()).find((i) => i.uid === uid) ?? null,
     respondToInvitation: async () => void writes.push('respondToInvitation'),
   } as unknown as CalendarService;
   const addressBookService = {

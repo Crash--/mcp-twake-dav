@@ -32,6 +32,24 @@ const readable = (answers: Answers, collection: string, property: 'calendarData'
   });
 };
 
+/** Text match for an addressbook-query, case-insensitive, `contains` (RFC 6352 10.5.4). */
+export function vcardTextFilter(properties: string[], text: string): unknown {
+  return {
+    _attributes: { test: 'anyof' },
+    'prop-filter': properties.map((name) => ({
+      _attributes: { name },
+      'text-match': { _attributes: { collation: 'i;unicode-casemap', 'match-type': 'contains' }, _text: text },
+    })),
+  };
+}
+
+/** The vCards of one address book that the server matched with `filters`. */
+export async function queryVCards(client: DAVClientType, url: string, filters: unknown): Promise<DAVVCard[]> {
+  const props = { 'd:getetag': {}, 'card:address-data': {} };
+  const answers = await client.addressBookQuery({ url, props, filters: filters as never, depth: '1' });
+  return readable(answers, url, 'addressData');
+}
+
 export function keepPartialReads(client: DAVClientType): DAVClientType {
   const fetchCalendarObjects = async (params: {
     calendar: { url: string };

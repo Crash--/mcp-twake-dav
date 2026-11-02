@@ -83,6 +83,7 @@ export function transformInvitation(
 
     // Find current user's PARTSTAT from attendees
     let userPartstat = 'NEEDS-ACTION';
+    let isAttendee = false;
     const normalizedUserEmail = userEmail.toLowerCase();
 
     for (const attendee of event.attendees) {
@@ -92,6 +93,7 @@ export function transformInvitation(
         if (attendeeEmail === normalizedUserEmail) {
           const partstatParam = attendee.getParameter('partstat');
           userPartstat = (typeof partstatParam === 'string' ? partstatParam : undefined) || 'NEEDS-ACTION';
+          isAttendee = true;
           break;
         }
       }
@@ -108,6 +110,7 @@ export function transformInvitation(
       proposedEnd: event.endDate.toJSDate(),
       location: event.location || undefined,
       userPartstat,
+      isAttendee,
       url: response.href,
       etag: response.props?.getetag || '',
       _raw: calendarData,

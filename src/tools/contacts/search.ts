@@ -9,7 +9,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from 'pino';
 import type { AddressBookService } from '../../caldav/addressbook-service.js';
 import {
-  resolveAddressBookContacts,
+  searchAddressBookContacts,
   searchContactsByName,
   searchContactsByOrganization,
   formatContact,
@@ -63,8 +63,9 @@ export function registerSearchContactsTool(
         }
 
         // Fetch contacts based on addressbook param / default / all
-        const contacts = await resolveAddressBookContacts(
-          addressBookService, params.addressbook, defaultAddressBook, logger
+        // The server matches the name (or the organization); exact filters are applied below
+        const contacts = await searchAddressBookContacts(
+          addressBookService, { name: params.name, organization: params.organization }, params.addressbook, defaultAddressBook, logger
         );
 
         // Apply filters

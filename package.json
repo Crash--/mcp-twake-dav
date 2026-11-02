@@ -1,6 +1,6 @@
 {
   "name": "mcp-twake-dav",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "MCP server for Twake.ai Calendar and contacts: give any MCP-compatible AI assistant secure access to your sovereign CalDAV calendars and CardDAV address books",
   "license": "AGPL-3.0-only",
   "type": "module",

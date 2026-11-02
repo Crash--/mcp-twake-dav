@@ -19,6 +19,9 @@ import * as chrono from 'chrono-node';
  * @param logger - Pino logger
  * @param userTimezone - Optional user timezone for date formatting
  */
+/** Invitations listed at most, so a busy month does not flood the conversation. */
+const MAX_LISTED = 50;
+
 export function registerListInvitationsTool(
   server: McpServer,
   calendarService: CalendarService,
@@ -32,7 +35,8 @@ export function registerListInvitationsTool(
       timeRange: z.object({
         start: z.string().describe('Start of time range (ISO 8601 or natural language like "today", "next week")'),
         end: z.string().describe('End of time range (ISO 8601 or natural language)'),
-      }).optional().describe('Optional: filter invitations by proposed event time'),
+      }).optional().describe('Events in this range (default: from now to 30 days ahead).'),
+      calendar: z.string().optional().describe('Calendar to look in, or "all" (default: the default calendar).'),
     },
     {
       readOnlyHint: true,
@@ -56,12 +60,12 @@ export function registerListInvitationsTool(
             };
             logger.debug({ timeRange }, 'Parsed time range filter');
           } else {
-            logger.warn({ params: params.timeRange }, 'Could not parse time range, ignoring filter');
+            throw new Error(`Could not read the range "${params.timeRange.start}" to "${params.timeRange.end}": use ISO dates.`);
           }
         }
 
         // Query pending invitations
-        const invitations = await calendarService.listPendingInvitations(timeRange);
+        const invitations = await calendarService.listPendingInvitations(timeRange, params.calendar);
 
         if (invitations.length === 0) {
           logger.info('No pending invitations found');
@@ -75,7 +79,8 @@ export function registerListInvitationsTool(
 
         // Format invitations for display
         const displayTimezone = userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const formatted = invitations.map((inv) => {
+        const shown = invitations.slice(0, MAX_LISTED);
+        const formatted = shown.map((inv) => {
           const startStr = inv.proposedStart.toLocaleString('en-US', { timeZone: displayTimezone });
           const endStr = inv.proposedEnd.toLocaleString('en-US', { timeZone: displayTimezone });
           const location = inv.location ? `\n  Location: ${inv.location}` : '';
@@ -86,7 +91,10 @@ export function registerListInvitationsTool(
   UID: ${inv.uid}`;
         }).join('\n\n');
 
-        const result = `Pending invitations (${invitations.length}):\n\n${formatted}`;
+        const count = invitations.length > MAX_LISTED
+          ? `${invitations.length} total, the first ${MAX_LISTED} shown: ask for a shorter range to see the rest`
+          : `${invitations.length}`;
+        const result = `Pending invitations (${count}):\n\n${formatted}`;
 
         logger.info({ count: invitations.length }, 'Listed pending invitations');
 

@@ -4,7 +4,25 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-11-02
+
+Load on the calendar server, measured on a real account (one call each, fresh process):
+
+| Call | 4.0.0 | 4.1.0 |
+|---|---|---|
+| `update_event` / `delete_event` on a UID absent from the default calendar | 25 MB, 11 s | 36 KB, 2 s |
+| `search_contacts`, `get_contact_details` | 6 to 9 MB each | 7 KB |
+| `list_invitations` | no request at all, always "no pending invitations" | works, one 30-day read |
+| `get_events_in_range` over 5 years | 25 MB | refused without a request (92 days at most) |
+
+DAV errors, timeouts and retries (#13) and pagination with 92-day ranges (#19) are by Crash--.
+
 ### Fixed
+- An unknown UID read every event of the calendar(s) after the server had already answered "no such UID" to the filtered query (tens of megabytes on a large calendar, for the same answer). The full read is now kept for servers that refuse the UID filter only.
+- `search_contacts` and `get_contact_details` downloaded every contact of the address book(s) on each call: the server now matches the name (FN, N) or the organization (ORG), case-insensitive; the exact filters still apply. Servers without this filter get the full read as before.
+- `list_invitations` never reached the server: it needed the principal URL from `client.account`, which `createDAVClient` does not expose, and silently answered that there was nothing pending. It now asks the calendars (the default calendar, `calendar`, or `"all"`) for events where you are an attendee with `PARTSTAT=NEEDS-ACTION`, from now to 30 days ahead by default, 50 listed at most with the total. The scheduling inbox is no longer used: it keeps every iTIP message ever received (850 on the test account, 10 s of server work per query) while the calendar holds the current state.
+- `respond_to_invitation` changed the copy of the invitation in the scheduling inbox and found it through that list: it now finds the event by UID in your calendars (`calendar` optional), checks that you are one of its attendees, and changes your answer on that event; the server sends the reply (RFC 6638 implicit scheduling). Your address is `DAV_ORGANIZER_EMAIL` (or `DAV_USERNAME` when it is an e-mail address); with an SSO token it is required.
+- An unreadable `timeRange` of `list_invitations` is an error instead of being ignored.
 - A failing DAV read (401, 413, 429, 500, or an error inside a 207) or an unknown calendar or address book name is an error for the assistant, with its status and what to do. Objects that could not be read are named next to the result, and so is a calendar this account has no access to: the other calendars still answer, and `check_availability` then says availability is unknown.
 - Every DAV request has a 30 second timeout and is cancelled with its tool call. A read is retried only on 429, 503 and network errors, and `Retry-After` is honoured up to 10 seconds.
 - PUT and DELETE are never retried. A write without an answer says that its outcome is unknown and must be checked first.

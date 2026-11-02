@@ -15,7 +15,8 @@ import type { DAVClientType } from './client.js';
 import { CollectionCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { discoverAddressBooks } from './discovery.js';
-import { ConflictError } from '../errors.js';
+import { ConflictError, isDavUnsupported } from '../errors.js';
+import { queryVCards, vcardTextFilter } from './object-reads.js';
 import { hasPartialRead } from './dav-fetch.js';
 import { transformVCard } from '../transformers/contact.js';
 import type { ContactDTO } from '../types/dtos.js';
@@ -171,6 +172,39 @@ export class AddressBookService {
       throw new Error(`Address book "${name}" not found.\n\nFix: Use list_addressbooks to see the available names.`);
     }
     return this.fetchContacts(match);
+  }
+
+  /**
+   * Contacts whose name (FN, N) or organization (ORG) contains `text`, matched by the server:
+   * a search no longer downloads every contact (several megabytes on a large directory).
+   * Falls back to a full read only on a server that does not support the filter.
+   *
+   * @param addressBookName - one address book (display name), or every address book when absent
+   */
+  async searchContacts(field: 'name' | 'organization', text: string, addressBookName?: string): Promise<DAVVCard[]> {
+    await this.listAddressBooks();
+    let books = this.addressBooks;
+    if (addressBookName) {
+      books = this.addressBooks.filter((ab) => getAddressBookName(ab).toLowerCase() === addressBookName.toLowerCase());
+      if (books.length === 0) {
+        throw new Error(`Address book "${addressBookName}" not found.\n\nFix: Use list_addressbooks to see the available names.`);
+      }
+    }
+    const filters = vcardTextFilter(field === 'name' ? ['FN', 'N'] : ['ORG'], text);
+    const results = await Promise.all(
+      books.map(async (ab) => {
+        try {
+          return await withRetry(() => queryVCards(this.client, ab.url, filters), this.logger);
+        } catch (err) {
+          if (!isDavUnsupported(err)) throw err;
+          this.logger.warn({ err, url: ab.url }, 'Server-side contact search not supported, reading the address book');
+          return this.fetchContacts(ab);
+        }
+      })
+    );
+    const vcards = results.flat();
+    this.logger.info({ field, addressBooks: books.length, count: vcards.length }, 'Searched contacts on the server');
+    return vcards;
   }
 
   /**

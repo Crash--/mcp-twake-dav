@@ -48,7 +48,7 @@ Used together, they let one assistant prepare a meeting from the invitation, the
 |---|---|
 | Calendar, read | `get_next_event`, `get_todays_schedule`, `get_events_in_range`, `search_events`, `check_availability`, `list_calendars` |
 | Calendar, write | `create_event` (with attendees and recurrence), `update_event`, `delete_event` ⚠️, `add_alarm`, `remove_alarm` |
-| Invitations | `list_invitations`, `respond_to_invitation` ⚠️ |
+| Invitations | `list_invitations` (events of your calendars awaiting your answer, next 30 days by default), `respond_to_invitation` ⚠️ |
 | Contacts, read | `search_contacts`, `get_contact_details`, `list_contacts`, `list_addressbooks` |
 | Contacts, write | `create_contact`, `update_contact`, `delete_contact` ⚠️ |
 
@@ -121,7 +121,7 @@ The server is configured through environment variables, usually set in your MCP 
 |---|---|---|
 | `DAV_DEFAULT_CALENDAR` | Calendar used when the assistant does not name one (`"all"` in a tool call still searches every calendar) | all calendars |
 | `DAV_DEFAULT_ADDRESSBOOK` | Address book used by default | all address books |
-| `DAV_ORGANIZER_EMAIL` / `DAV_ORGANIZER_NAME` | Organizer written in events that have attendees | none |
+| `DAV_ORGANIZER_EMAIL` / `DAV_ORGANIZER_NAME` | Organizer written in events that have attendees; your address as an attendee for `list_invitations` and `respond_to_invitation` (required with an SSO token) | none |
 | `DAV_RECURRING_WRITES` | `false` = `update_event` / `delete_event` refuse recurring series and occurrences | `true` |
 | `DAV_HREF_PREFIX` | Path prefix stripped by a reverse proxy, e.g. `/dav` for Twake Calendar / OpenPaaS | none |
 | `USER_TIMEZONE` | IANA time zone used to display and interpret dates, e.g. `Europe/Paris` | system time zone |

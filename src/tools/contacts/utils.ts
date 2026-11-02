@@ -185,6 +185,27 @@ export async function getAllContacts(
  * @param logger - Pino logger
  * @returns Array of ContactDTOs from resolved address book(s)
  */
+/**
+ * Contacts matching a name (or else an organization), searched by the server in the resolved
+ * address book(s); same resolution as resolveAddressBookContacts. The caller still applies its
+ * exact filters locally (the server match is a superset: N also holds other name parts).
+ */
+export async function searchAddressBookContacts(
+  addressBookService: AddressBookService,
+  query: { name?: string; organization?: string },
+  addressbookParam: string | undefined,
+  defaultAddressBook: string | undefined,
+  logger: Logger,
+): Promise<ContactDTO[]> {
+  const target = addressbookParam === 'all' ? undefined : (addressbookParam || defaultAddressBook);
+  const raw = query.name
+    ? await addressBookService.searchContacts('name', query.name, target)
+    : await addressBookService.searchContacts('organization', query.organization ?? '', target);
+  return raw
+    .map((vcard) => transformVCard(vcard as any, logger))
+    .filter((contact): contact is ContactDTO => contact !== null);
+}
+
 export async function resolveAddressBookContacts(
   addressBookService: AddressBookService,
   addressbookParam: string | undefined,

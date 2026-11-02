@@ -19,13 +19,13 @@ import { approverFor } from '../../approval.js';
  * @param server - MCP server instance
  * @param calendarService - Calendar service for responding to invitations
  * @param logger - Pino logger
- * @param config - Configuration with DAV_USERNAME for attendee email
+ * @param config - DAV_ORGANIZER_EMAIL (or DAV_USERNAME) is the attendee address of the user
  */
 export function registerRespondInvitationTool(
   server: McpServer,
   calendarService: CalendarService,
   logger: Logger,
-  config: { DAV_USERNAME?: string },
+  config: { DAV_USERNAME?: string; DAV_ORGANIZER_EMAIL?: string },
 ): void {
   server.tool(
     'respond_to_invitation',
@@ -35,6 +35,7 @@ export function registerRespondInvitationTool(
     '"Do you want to accept/decline/mark tentative for this invitation?"',
     {
       uid: z.string().describe('The UID of the invitation to respond to. Use list_invitations to find UIDs.'),
+      calendar: z.string().optional().describe('Calendar holding the invitation (default: the default calendar, then all calendars).'),
       response: z.enum(['accept', 'decline', 'tentative']).describe(
         'Your response: "accept" confirms attendance, "decline" refuses, "tentative" indicates uncertainty'
       ),
@@ -49,12 +50,12 @@ export function registerRespondInvitationTool(
         logger.debug({ params }, 'respond_to_invitation called');
 
         // Get user email from config
-        const userEmail = config.DAV_USERNAME || '';
+        const userEmail = config.DAV_ORGANIZER_EMAIL || (config.DAV_USERNAME?.includes('@') ? config.DAV_USERNAME : '');
         if (!userEmail) {
           return {
             content: [{
               type: 'text' as const,
-              text: 'Cannot determine user email. DAV_USERNAME configuration is required for invitation responses.',
+              text: 'Cannot determine your e-mail address: set DAV_ORGANIZER_EMAIL to answer invitations.',
             }],
             isError: true,
           };
@@ -68,15 +69,15 @@ export function registerRespondInvitationTool(
         };
         const partstat = partstatMap[params.response];
 
-        // Find the invitation by UID (need to query pending invitations)
-        const invitations = await calendarService.listPendingInvitations();
-        const invitation = invitations.find((inv) => inv.uid === params.uid);
+        // The event in the user's calendar, found by its UID on the server (an answer changes this
+        // event; the server sends the REPLY to the organizer)
+        const invitation = await calendarService.findInvitation(params.uid, params.calendar);
 
         if (!invitation) {
           return {
             content: [{
               type: 'text' as const,
-              text: `Invitation not found with UID: ${params.uid}\n\nUse list_invitations to see pending invitations and their UIDs.`,
+              text: `No invitation for you with UID: ${params.uid}\n\nUse list_invitations to see pending invitations and their UIDs.`,
             }],
             isError: true,
           };

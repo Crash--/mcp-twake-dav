@@ -278,6 +278,8 @@ export interface InvitationDTO {
   location?: string;
   /** Current user's participation status */
   userPartstat: string;
+  /** Whether the user is one of the ATTENDEEs (false: the event does not invite the user) */
+  isAttendee?: boolean;
   /** CalDAV object URL for responding */
   url: string;
   /** HTTP ETag for optimistic concurrency */
