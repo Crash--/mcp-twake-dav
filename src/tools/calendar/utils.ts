@@ -18,7 +18,7 @@ import type { Logger } from 'pino';
 import type { DAVCalendarObject } from 'tsdav';
 import type { CalendarService, TimeRange } from '../../caldav/calendar-service.js';
 import type { EventDTO, FreeBusyPeriod } from '../../types/dtos.js';
-import { addReadWarning } from '../../caldav/dav-fetch.js';
+import { addReadWarning, hasPartialRead } from '../../caldav/dav-fetch.js';
 import { transformCalendarObject } from '../../transformers/event.js';
 import { expandRecurringEvent } from '../../transformers/recurrence.js';
 
@@ -319,12 +319,14 @@ const MAX_OCCURRENCES_PER_SERIES = 10_000;
  * @param rawEvents - Array of DAVCalendarObject from CalendarService
  * @param timeRange - ISO 8601 time range for filtering/expansion
  * @param logger - Pino logger for error/debug output
+ * @param options - earliestOnly: the caller only uses the earliest events, so a series cut after its first occurrences loses nothing
  * @returns Sorted array of EventDTOs
  */
 export function getEventsWithRecurrenceExpansion(
   rawEvents: DAVCalendarObject[],
   timeRange: TimeRange,
   logger: Logger,
+  options: { earliestOnly?: boolean } = {},
 ): EventDTO[] {
   const startDate = new Date(timeRange.start);
   const endDate = new Date(timeRange.end);
@@ -374,12 +376,13 @@ export function getEventsWithRecurrenceExpansion(
         // Expand recurring event with time range boundaries. Occurrences that started before
         // the range but are still running inside it count too (multi-day all-day markers,
         // a meeting already started at the range start).
-        const occurrences = expandRecurringEvent(vevent, {
-          maxOccurrences: MAX_OCCURRENCES_PER_SERIES,
+        const expanded = expandRecurringEvent(vevent, {
+          maxOccurrences: MAX_OCCURRENCES_PER_SERIES + 1,
           maxDate: endDate,
           startDate: new Date(startDate.getTime() - duration),
         });
-        if (occurrences.length >= MAX_OCCURRENCES_PER_SERIES) {
+        const occurrences = expanded.slice(0, MAX_OCCURRENCES_PER_SERIES);
+        if (expanded.length > MAX_OCCURRENCES_PER_SERIES && !options.earliestOnly) {
           addReadWarning(`The series ${eventDTO.uid} has more than ${MAX_OCCURRENCES_PER_SERIES} occurrences in this range, and the later ones are not listed.`);
         }
         const occurrenceEndOf = (occurrence: Date): Date => {
@@ -528,7 +531,8 @@ export function paginateEvents(
 ): { page: EventDTO[]; nextCursor: EventCursor | null; more: number } {
   const from = cursor ? Date.parse(cursor.start) : -Infinity;
   const skip = cursor?.skip ?? 0;
-  if (skip > events.filter((event) => event.startDate.getTime() === from).length) {
+  // At least one event was left at this start when the cursor was made: the calendar changed.
+  if (skip > 0 && skip >= events.filter((event) => event.startDate.getTime() === from).length) {
     addReadWarning('The cursor skips more events than start at its date: the calendar changed since the previous page, so some events may be missing.');
   }
   const remaining = events
@@ -556,7 +560,12 @@ export function paginateEvents(
 export function formatPageFooter(nextCursor: EventCursor | null, more: number): string {
   return nextCursor
     ? `\n\n${more} more event${more === 1 ? '' : 's'} remain${more === 1 ? 's' : ''}. To continue, call again with the same dates and pass this value as cursor:\nnextCursor: ${JSON.stringify(nextCursor)}`
-    : '\n\nNo more events in this range.';
+    : `\n\n${formatRangeEnd()}`;
+}
+
+/** What ends a range. Next to a warning, it must not say that nothing remains. */
+export function formatRangeEnd(): string {
+  return hasPartialRead() ? 'End of this page. See the warning below: events may be missing.' : 'No more events in this range.';
 }
 
 /**
