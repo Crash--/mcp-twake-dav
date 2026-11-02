@@ -20,6 +20,7 @@ import {
   pageWindow,
   paginateEvents,
   formatPageFooter,
+  formatRangeEnd,
   MAX_WINDOW_DAYS,
 } from './utils.js';
 
@@ -141,7 +142,7 @@ export function registerSearchEventsTool(
             content: [
               {
                 type: 'text' as const,
-                text: `No events found matching ${searchDescription}`,
+                text: params.cursor ? formatRangeEnd() : `No events found matching ${searchDescription}`,
               },
             ],
           };

@@ -134,6 +134,47 @@ describe('walks', () => {
     });
   });
 
+  it('warns when the event a cursor had counted is gone, and the next one with it', async () => {
+    serve(ical(['BEGIN:VEVENT', 'UID:b', 'DTSTAMP:20260101T000000Z', 'SUMMARY:b', `DTSTART:${basic(T0)}`, `DTEND:${basic(T0 + 1000)}`, 'END:VEVENT']));
+    const text = textOf(await client.callTool({ name: 'get_events_in_range', arguments: { ...range, cursor: { start: new Date(T0).toISOString(), skip: 1 } } }));
+    expect(text).toContain('calendar changed');
+    expect(text).not.toContain('No more events');
+  });
+
+  it('a page after the last event says there is no more', async () => {
+    serve(ical(master(2)));
+    const text = textOf(await client.callTool({ name: 'get_events_in_range', arguments: { ...range, cursor: { start: new Date(T0 + 30 * DAY).toISOString(), skip: 0 } } }));
+    expect(text).toContain('No more events in this range.');
+    expect(text).not.toContain('No events found');
+  });
+
+  describe('a series around the ceiling of 10 000 occurrences', () => {
+    const minutely = (rule: string) => ical(['BEGIN:VEVENT', 'UID:busy', 'DTSTAMP:20260101T000000Z', 'SUMMARY:busy', `DTSTART:${basic(T0)}`, `DTEND:${basic(T0 + 1000)}`, `RRULE:FREQ=MINUTELY${rule}`, 'END:VEVENT']);
+
+    it('says nothing at exactly 10 000', async () => {
+      serve(minutely(';COUNT=10000'));
+      const text = textOf(await client.callTool({ name: 'get_events_in_range', arguments: { ...range, limit: 1 } }));
+      expect(text).not.toContain('incomplete');
+    });
+
+    it('warns above it, and the last page does not say that nothing remains', async () => {
+      serve(minutely(''));
+      const first = textOf(await client.callTool({ name: 'get_events_in_range', arguments: { ...range, limit: 1 } }));
+      expect(first).toContain('more than 10000 occurrences');
+      const last = textOf(await client.callTool({ name: 'get_events_in_range', arguments: { ...range, limit: 1, cursor: { start: new Date(T0 + 9_999 * 60_000).toISOString(), skip: 0 } } }));
+      expect(last).not.toContain('No more events');
+      expect(last).toContain('End of this page');
+    });
+
+    it('get_next_event gives an exact answer without calling it incomplete', async () => {
+      const start = Date.now() + DAY;
+      serve(ical(['BEGIN:VEVENT', 'UID:busy', 'DTSTAMP:20260101T000000Z', 'SUMMARY:busy', `DTSTART:${basic(start)}`, `DTEND:${basic(start + 1000)}`, 'RRULE:FREQ=MINUTELY', 'END:VEVENT']));
+      const text = textOf(await client.callTool({ name: 'get_next_event', arguments: {} }));
+      expect(text).toContain('UID: busy');
+      expect(text).not.toContain('incomplete');
+    });
+  });
+
   it.each([1, 2, 7, 50])('a series of 90 days with a cancelled day gives 89, at limit %i', async (limit) => {
     serve(ical(master(90), cancelled(10)));
     const seen = await walk('get_events_in_range', { ...range, limit });

@@ -19,6 +19,7 @@ import {
   pageWindow,
   paginateEvents,
   formatPageFooter,
+  formatRangeEnd,
 } from './utils.js';
 
 /**
@@ -85,7 +86,7 @@ export function registerTodaysScheduleTool(
             content: [
               {
                 type: 'text' as const,
-                text: 'No events scheduled for today',
+                text: params.cursor ? formatRangeEnd() : 'No events scheduled for today',
               },
             ],
           };

@@ -18,6 +18,7 @@ import {
   pageWindow,
   paginateEvents,
   formatPageFooter,
+  formatRangeEnd,
   MAX_WINDOW_DAYS,
 } from './utils.js';
 
@@ -92,7 +93,7 @@ export function registerDateRangeTool(
             content: [
               {
                 type: 'text' as const,
-                text: `No events found for ${params.when}`,
+                text: params.cursor ? formatRangeEnd() : `No events found for ${params.when}`,
               },
             ],
           };
