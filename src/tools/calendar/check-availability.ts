@@ -137,6 +137,8 @@ export function registerCheckAvailabilityTool(
 
         const timeRange = { start: startDate.toISOString(), end: endDate.toISOString() };
         const rawEvents = await resolveCalendarEvents(calendarService, params.calendar, defaultCalendar, timeRange);
+        // every event counts: a truncated list would report busy slots as free
+        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, Number.POSITIVE_INFINITY);
         // Anything not read could be what makes this time busy.
         if (hasPartialRead()) {
           return {
@@ -147,8 +149,6 @@ export function registerCheckAvailabilityTool(
             isError: true,
           };
         }
-        // every event counts: a truncated list would report busy slots as free
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, Number.POSITIVE_INFINITY);
         const displayTimezone = userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
         const text = buildAvailabilityText(events, startDate, endDate, displayTimezone, { allDayBusy: params.all_day_busy ?? false }, logger);
         return { content: [{ type: 'text' as const, text }] };
