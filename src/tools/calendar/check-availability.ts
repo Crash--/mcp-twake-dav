@@ -17,6 +17,7 @@ import {
   resolveCalendarEvents,
   getEventsWithRecurrenceExpansion,
   computeBusyPeriods,
+  checkWindow,
   formatAllDaySpan,
 } from './utils.js';
 import type { EventDTO } from '../../types/dtos.js';
@@ -136,9 +137,12 @@ export function registerCheckAvailabilityTool(
         }
 
         const timeRange = { start: startDate.toISOString(), end: endDate.toISOString() };
+        const windowProblem = checkWindow(timeRange);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
+        }
         const rawEvents = await resolveCalendarEvents(calendarService, params.calendar, defaultCalendar, timeRange);
-        // every event counts: a truncated list would report busy slots as free
-        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, Number.POSITIVE_INFINITY);
+        const events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
         // Anything not read could be what makes this time busy.
         if (hasPartialRead()) {
           return {

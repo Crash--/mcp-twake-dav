@@ -13,6 +13,7 @@
 
 import * as chrono from 'chrono-node';
 import ICAL from 'ical.js';
+import { z } from 'zod';
 import type { Logger } from 'pino';
 import type { DAVCalendarObject } from 'tsdav';
 import type { CalendarService, TimeRange } from '../../caldav/calendar-service.js';
@@ -313,19 +314,17 @@ const MAX_OCCURRENCES_PER_SERIES = 10_000;
  * 1. Transform each DAVCalendarObject to EventDTO using Phase 2 transformer
  * 2. For recurring events: parse _raw iCalendar and expand with Phase 2 recurrence expander
  * 3. For non-recurring events: filter by time range
- * 4. Sort by startDate ascending
- * 5. Limit to 50 events max (truncation protection)
+ * 4. Sort by startDate, then UID and URL so that pages stay stable
  *
  * @param rawEvents - Array of DAVCalendarObject from CalendarService
  * @param timeRange - ISO 8601 time range for filtering/expansion
  * @param logger - Pino logger for error/debug output
- * @returns Sorted array of EventDTOs (max 50)
+ * @returns Sorted array of EventDTOs
  */
 export function getEventsWithRecurrenceExpansion(
   rawEvents: DAVCalendarObject[],
   timeRange: TimeRange,
   logger: Logger,
-  limit = 50,
 ): EventDTO[] {
   const startDate = new Date(timeRange.start);
   const endDate = new Date(timeRange.end);
@@ -455,20 +454,108 @@ export function getEventsWithRecurrenceExpansion(
     }
   }
 
-  // Sort by startDate ascending
-  allEvents.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
+  allEvents.sort((a, b) =>
+    a.startDate.getTime() - b.startDate.getTime()
+    || a.uid.localeCompare(b.uid)
+    || a.url.localeCompare(b.url)
+  );
 
-  // Limit the number of events (truncation protection for listings; availability needs them all)
-  const limited = allEvents.slice(0, limit);
+  return allEvents;
+}
 
-  if (allEvents.length > limit) {
-    logger.warn(
-      { total: allEvents.length, returned: limit },
-      `Event results truncated to ${limit} (safety limit)`
-    );
+export const DEFAULT_EVENT_LIMIT = 50;
+export const MAX_EVENT_LIMIT = 100;
+export const MAX_WINDOW_DAYS = 92;
+const MAX_CURSOR_SKIP = 10_000;
+
+/** Where the next page starts: the start of its first event, and how many events at that exact start were already returned. */
+export interface EventCursor {
+  start: string;
+  skip: number;
+}
+
+export const paginationParams = {
+  limit: z.number().int().min(1).max(MAX_EVENT_LIMIT).optional().describe(
+    `Maximum number of events to return (default ${DEFAULT_EVENT_LIMIT}, maximum ${MAX_EVENT_LIMIT}).`
+  ),
+  cursor: z.object({
+    start: z.string().datetime({ offset: true }),
+    skip: z.number().int().min(0).max(MAX_CURSOR_SKIP),
+  }).optional().describe('The value of nextCursor in the previous response. Repeat the same dates and filters with it.'),
+  // A model may repeat the name it read in the response: the schema would drop it and page 1 would come back.
+  nextCursor: z.never({ error: 'Pass the value of nextCursor as the cursor parameter.' }).optional().describe('Not a parameter: pass the value of nextCursor as cursor.'),
+};
+
+/**
+ * Check a window against the maximum, so that a wide range is an instruction to page rather than a huge download.
+ *
+ * @returns The problem to report, or null if the window is acceptable
+ */
+export function checkWindow(timeRange: TimeRange, cursor?: EventCursor): string | null {
+  const start = Date.parse(timeRange.start);
+  const end = Date.parse(timeRange.end);
+  // In calendar days: 92 of them hold 92 days and one hour across the change to winter time.
+  if (end - start > MAX_WINDOW_DAYS * 86_400_000 + 3_600_000) {
+    return `The date range is longer than ${MAX_WINDOW_DAYS} days. Ask for ${MAX_WINDOW_DAYS} days at most, then for the following days in another call.`;
   }
+  // No lower bound: an event running at the start of the range starts before it.
+  if (cursor && Date.parse(cursor.start) >= end) {
+    return 'The cursor is after the end of the date range. Repeat the dates of the call that returned it, or call again without the cursor.';
+  }
+  return null;
+}
 
-  return limited;
+/** The query window of a page: earlier events of the range were returned by earlier pages. */
+export function pageWindow(timeRange: TimeRange, cursor?: EventCursor): TimeRange {
+  return cursor && Date.parse(cursor.start) > Date.parse(timeRange.start)
+    ? { start: cursor.start, end: timeRange.end }
+    : timeRange;
+}
+
+/**
+ * Cut sorted events into one page.
+ *
+ * The server also returns events that started before the cursor and are still
+ * running: earlier pages returned them, so they are dropped here.
+ *
+ * @returns The page, the cursor of the next one, and how many events remain after this page
+ */
+export function paginateEvents(
+  events: EventDTO[],
+  limit: number = DEFAULT_EVENT_LIMIT,
+  cursor?: EventCursor,
+): { page: EventDTO[]; nextCursor: EventCursor | null; more: number } {
+  const from = cursor ? Date.parse(cursor.start) : -Infinity;
+  const skip = cursor?.skip ?? 0;
+  if (skip > events.filter((event) => event.startDate.getTime() === from).length) {
+    addReadWarning('The cursor skips more events than start at its date: the calendar changed since the previous page, so some events may be missing.');
+  }
+  const remaining = events
+    .filter((event) => event.startDate.getTime() >= from)
+    .filter((event, index) => !(index < skip && event.startDate.getTime() === from));
+
+  const page = remaining.slice(0, limit);
+  const more = remaining.length - page.length;
+  const next = remaining[limit];
+  if (!next) return { page, nextCursor: null, more };
+
+  const nextStart = next.startDate.getTime();
+  const alreadyReturned = page.filter((event) => event.startDate.getTime() === nextStart).length;
+  return {
+    page,
+    nextCursor: {
+      start: next.startDate.toISOString(),
+      skip: alreadyReturned + (nextStart === from ? skip : 0),
+    },
+    more,
+  };
+}
+
+/** The last lines of a page: the model must never read a page as the whole result. */
+export function formatPageFooter(nextCursor: EventCursor | null, more: number): string {
+  return nextCursor
+    ? `\n\n${more} more event${more === 1 ? '' : 's'} remain${more === 1 ? 's' : ''}. To continue, call again with the same dates and pass this value as cursor:\nnextCursor: ${JSON.stringify(nextCursor)}`
+    : '\n\nNo more events in this range.';
 }
 
 /**

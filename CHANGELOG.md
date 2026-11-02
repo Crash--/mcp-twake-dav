@@ -16,6 +16,8 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 - Events and contacts are read with one query that returns the data, without a multiget.
 - `tsdav` is pinned to exactly 2.5.0: the fetch guard and the reads depend on how it works inside, and a published package has no lockfile.
 - An event shows its first 10 attendees and how many more it has.
+- `get_events_in_range`, `get_todays_schedule` and `search_events` take `limit` (default 50, maximum 100) and `cursor`, and return `nextCursor` while events remain.
+- A date range covers 92 days at most, including in `check_availability`.
 
 ## [4.0.0] - 2026-11-01
 

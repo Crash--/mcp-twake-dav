@@ -15,6 +15,12 @@ import {
   searchEventsByKeyword,
   searchEventsByAttendee,
   resolveCalendarEvents,
+  paginationParams,
+  checkWindow,
+  pageWindow,
+  paginateEvents,
+  formatPageFooter,
+  MAX_WINDOW_DAYS,
 } from './utils.js';
 
 /**
@@ -24,9 +30,6 @@ import {
  * @param calendarService - Calendar service for fetching events
  * @param logger - Pino logger
  */
-/** Matches listed in one answer. */
-const MAX_LISTED = 50;
-
 export function registerSearchEventsTool(
   server: McpServer,
   calendarService: CalendarService,
@@ -36,11 +39,12 @@ export function registerSearchEventsTool(
 ): void {
   server.tool(
     'search_events',
-    'Search calendar events by keyword in title/description or by attendee name. Searches the next 30 days by default. Optionally filter by calendar name.',
+    `Search calendar events by keyword in title/description or by attendee name. Searches the next 30 days by default, ${MAX_WINDOW_DAYS} days at most, one page at a time. When the response has a nextCursor, more events remain. Optionally filter by calendar name.`,
     {
       query: z.string().optional().describe('Keyword to search in event titles and descriptions'),
       attendee: z.string().optional().describe('Attendee name to filter by'),
       when: z.string().optional().describe('Date range to search (defaults to next 30 days). Examples: \'this week\', \'next month\''),
+      ...paginationParams,
       calendar: z.string().optional().describe(
         'Calendar name to search in. Use "all" to search all calendars. ' +
         (defaultCalendar ? `Defaults to "${defaultCalendar}".` : 'Defaults to all calendars.')
@@ -97,14 +101,19 @@ export function registerSearchEventsTool(
           };
         }
 
+        const windowProblem = checkWindow(timeRange, params.cursor);
+        if (windowProblem) {
+          return { content: [{ type: 'text' as const, text: windowProblem }], isError: true };
+        }
+
         // Fetch events based on calendar param / default / all
         const rawEvents = await resolveCalendarEvents(
-          calendarService, params.calendar, defaultCalendar, timeRange
+          calendarService, params.calendar, defaultCalendar, pageWindow(timeRange, params.cursor)
         );
 
         // Transform and expand recurring events
-        // filter the whole range first: truncating before filtering hid matches after the 50th event
-        let events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger, Number.POSITIVE_INFINITY);
+        // Over the whole range: an occurrence moved after the cursor comes from before it.
+        let events = getEventsWithRecurrenceExpansion(rawEvents, timeRange, logger);
 
         // Apply keyword filter if query provided
         if (params.query) {
@@ -115,6 +124,10 @@ export function registerSearchEventsTool(
         if (params.attendee) {
           events = searchEventsByAttendee(events, params.attendee);
         }
+
+        // Cut after the filters: a match can be anywhere in the window.
+        const { page, nextCursor, more } = paginateEvents(events, params.limit, params.cursor);
+        events = page;
 
         if (events.length === 0) {
           const searchDescription = params.query
@@ -134,12 +147,7 @@ export function registerSearchEventsTool(
           };
         }
 
-        // Sort by startDate ascending (already sorted, but explicit)
-        events.sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
-
         // Format all events
-        const total = events.length;
-        events = events.slice(0, MAX_LISTED);
         const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
 
         const searchDescription = params.query
@@ -148,8 +156,7 @@ export function registerSearchEventsTool(
             : `keyword "${params.query}"`
           : `attendee "${params.attendee}"`;
 
-        const shownNote = total > events.length ? ` (the first ${events.length} shown: narrow the date range to see the rest)` : '';
-        const result = `Found ${total} event${total === 1 ? '' : 's'} matching ${searchDescription}${shownNote}:\n\n${formattedEvents}`;
+        const result = `Found ${events.length} event${events.length === 1 ? '' : 's'} matching ${searchDescription} in this page:\n\n${formattedEvents}${formatPageFooter(nextCursor, more)}`;
 
         logger.info({ query: params.query, attendee: params.attendee, count: events.length }, 'Search completed');
 
