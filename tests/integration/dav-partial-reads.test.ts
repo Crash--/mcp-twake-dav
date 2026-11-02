@@ -109,6 +109,14 @@ describe('partial reads', () => {
     expect(text).toContain('unknown');
   });
 
+  it('bounds the attendees shown and says how many are left', async () => {
+    const attendees = Array.from({ length: 200 }, (_, i) => `ATTENDEE;PARTSTAT=ACCEPTED:mailto:p${i}@example.com`).join('\r\n');
+    dav.handler = (req) => (req.method === 'REPORT' ? calendarObjects([{ href: '/calendars/u1/Perso/big.ics', ical: ical.replace('SUMMARY:a', `SUMMARY:a\r\n${attendees}`) }]) : null);
+    const { text } = await call('get_todays_schedule', { calendar: 'Perso' });
+    expect(text.match(/<p\d+@example\.com>/g)).toHaveLength(10);
+    expect(text).toContain('190 more not shown (200 in total)');
+  });
+
   describe('an object that cannot be read', () => {
     const unreadable = calendarObjects([{ href: '/calendars/u1/Perso/bad.ics', ical: 'not ical' }]);
 

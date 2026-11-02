@@ -196,6 +196,13 @@ export function formatEventTime(event: EventDTO, userTimezone?: string): string 
   return `${startStr} - ${endTime}${timezoneStr}`;
 }
 
+// A list of events is bounded by its number of events: 100 events of 200 attendees would be 925 000 characters.
+const MAX_ATTENDEES_SHOWN = 10;
+
+function omittedAttendees(total: number): string {
+  return total > MAX_ATTENDEES_SHOWN ? `, and ${total - MAX_ATTENDEES_SHOWN} more not shown (${total} in total)` : '';
+}
+
 /**
  * Format event as concise multi-line text for LLM consumption
  *
@@ -240,6 +247,7 @@ export function formatEvent(event: EventDTO, userTimezone?: string): string {
   // Line 5: Attendees with participation status (if present, indented)
   if (event.attendeeDetails && event.attendeeDetails.length > 0) {
     const attendeesList = event.attendeeDetails
+      .slice(0, MAX_ATTENDEES_SHOWN)
       .map((a) => {
         // Format partstat for display (e.g., NEEDS-ACTION -> needs-action)
         const status = a.partstat.toLowerCase().replace(/-/g, '-');
@@ -247,10 +255,10 @@ export function formatEvent(event: EventDTO, userTimezone?: string): string {
         return `${a.name} <${a.email}> (${status})`;
       })
       .join(', ');
-    lines.push(`  Attendees: ${attendeesList}`);
+    lines.push(`  Attendees: ${attendeesList}${omittedAttendees(event.attendeeDetails.length)}`);
   } else if (event.attendees.length > 0) {
     // Fallback to simple attendee list if no details available
-    lines.push(`  Attendees: ${event.attendees.join(', ')}`);
+    lines.push(`  Attendees: ${event.attendees.slice(0, MAX_ATTENDEES_SHOWN).join(', ')}${omittedAttendees(event.attendees.length)}`);
   }
 
   return lines.join('\n');
