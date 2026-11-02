@@ -8,6 +8,9 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 - An event of no duration at the start of a page or a range was left out by the server, and a meeting at the same time could go with it.
 - A page next to a warning no longer says that nothing remains, a page after the last event says so instead of "No events found", a series of exactly 10 000 occurrences is no longer reported as cut, `get_next_event` no longer calls an exact answer incomplete, and a cursor warns when the event it had counted is gone.
 
+### Added
+- `all_attendees` on `get_events_in_range`, `get_todays_schedule` and `search_events` lists every attendee of each event, to use with a small `limit`. `get_next_event` always does.
+
 ## [4.1.0] - 2026-11-02
 
 Load on the calendar server, measured on a real account (one call each, fresh process):

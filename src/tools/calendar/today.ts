@@ -93,7 +93,7 @@ export function registerTodaysScheduleTool(
         }
 
         // Format all events
-        const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
+        const formattedEvents = events.map((event) => formatEvent(event, userTimezone, params.all_attendees)).join('\n\n');
         const result = `Today's schedule (${events.length} event${events.length === 1 ? '' : 's'} in this page):\n\n${formattedEvents}${formatPageFooter(nextCursor, more)}`;
 
         logger.info({ count: events.length }, 'Today\'s schedule retrieved');

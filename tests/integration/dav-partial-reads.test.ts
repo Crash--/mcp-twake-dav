@@ -114,7 +114,7 @@ describe('partial reads', () => {
     dav.handler = (req) => (req.method === 'REPORT' ? calendarObjects([{ href: '/calendars/u1/Perso/big.ics', ical: ical.replace('SUMMARY:a', `SUMMARY:a\r\n${attendees}`) }]) : null);
     const { text } = await call('get_todays_schedule', { calendar: 'Perso' });
     expect(text.match(/<p\d+@example\.com>/g)).toHaveLength(10);
-    expect(text).toContain('190 more not shown (200 in total)');
+    expect(text).toContain('190 more not shown (200 in total');
   });
 
   describe('an object that cannot be read', () => {

@@ -201,7 +201,7 @@ export function formatEventTime(event: EventDTO, userTimezone?: string): string 
 const MAX_ATTENDEES_SHOWN = 10;
 
 function omittedAttendees(total: number): string {
-  return total > MAX_ATTENDEES_SHOWN ? `, and ${total - MAX_ATTENDEES_SHOWN} more not shown (${total} in total)` : '';
+  return total > MAX_ATTENDEES_SHOWN ? `, and ${total - MAX_ATTENDEES_SHOWN} more not shown (${total} in total, all_attendees with a small limit lists them)` : '';
 }
 
 /**
@@ -215,9 +215,12 @@ function omittedAttendees(total: number): string {
  *
  * @param event - EventDTO to format
  * @param userTimezone - Optional user timezone for display (e.g., "Europe/Paris")
+ * @param allAttendees - Show every attendee instead of the first ones
  * @returns Multi-line formatted event string
  */
-export function formatEvent(event: EventDTO, userTimezone?: string): string {
+export function formatEvent(event: EventDTO, userTimezone?: string, allAttendees = false): string {
+  const shownAttendees = allAttendees ? Infinity : MAX_ATTENDEES_SHOWN;
+  const omitted = (total: number) => (allAttendees ? '' : omittedAttendees(total));
   const lines: string[] = [];
 
   // Line 1: Summary (with status indicator if cancelled)
@@ -248,7 +251,7 @@ export function formatEvent(event: EventDTO, userTimezone?: string): string {
   // Line 5: Attendees with participation status (if present, indented)
   if (event.attendeeDetails && event.attendeeDetails.length > 0) {
     const attendeesList = event.attendeeDetails
-      .slice(0, MAX_ATTENDEES_SHOWN)
+      .slice(0, shownAttendees)
       .map((a) => {
         // Format partstat for display (e.g., NEEDS-ACTION -> needs-action)
         const status = a.partstat.toLowerCase().replace(/-/g, '-');
@@ -256,10 +259,10 @@ export function formatEvent(event: EventDTO, userTimezone?: string): string {
         return `${a.name} <${a.email}> (${status})`;
       })
       .join(', ');
-    lines.push(`  Attendees: ${attendeesList}${omittedAttendees(event.attendeeDetails.length)}`);
+    lines.push(`  Attendees: ${attendeesList}${omitted(event.attendeeDetails.length)}`);
   } else if (event.attendees.length > 0) {
     // Fallback to simple attendee list if no details available
-    lines.push(`  Attendees: ${event.attendees.slice(0, MAX_ATTENDEES_SHOWN).join(', ')}${omittedAttendees(event.attendees.length)}`);
+    lines.push(`  Attendees: ${event.attendees.slice(0, shownAttendees).join(', ')}${omitted(event.attendees.length)}`);
   }
 
   return lines.join('\n');
@@ -487,6 +490,7 @@ export const paginationParams = {
   }).optional().describe('The value of nextCursor in the previous response. Repeat the same dates and filters with it.'),
   // A model may repeat the name it read in the response: the schema would drop it and page 1 would come back.
   nextCursor: z.never({ error: 'Pass the value of nextCursor as the cursor parameter.' }).optional().describe('Not a parameter: pass the value of nextCursor as cursor.'),
+  all_attendees: z.boolean().optional().describe('List every attendee of each event, instead of the first 10. An answer can then reach hundreds of thousands of characters: use it with a small limit.'),
 };
 
 /**

@@ -149,7 +149,7 @@ export function registerSearchEventsTool(
         }
 
         // Format all events
-        const formattedEvents = events.map((event) => formatEvent(event, userTimezone)).join('\n\n');
+        const formattedEvents = events.map((event) => formatEvent(event, userTimezone, params.all_attendees)).join('\n\n');
 
         const searchDescription = params.query
           ? params.attendee
