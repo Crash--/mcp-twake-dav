@@ -4,6 +4,8 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-11-02
+
 ### Fixed
 - An event of no duration at the start of a page or a range was left out by the server, and a meeting at the same time could go with it.
 - A page next to a warning no longer says that nothing remains, a page after the last event says so instead of "No events found", a series of exactly 10 000 occurrences is no longer reported as cut, `get_next_event` no longer calls an exact answer incomplete, and a cursor warns when the event it had counted is gone.
