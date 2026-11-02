@@ -56,6 +56,29 @@ describe('walks', () => {
         ? calendarObjects(objects.map((data, i) => ({ href: `/calendars/u1/Perso/o${i}.ics`, ical: data })))
         : null;
   };
+  /**
+   * Answers like sabre: follows the time-range of the query, leaves out an event of no
+   * duration at its exact start, and returns the objects in another order at each call.
+   */
+  const serveLikeSabre = (events: Array<{ uid: string; start: number; minutes: number }>) => {
+    let calls = 0;
+    const when = (text: string) => Date.UTC(+text.slice(0, 4), +text.slice(4, 6) - 1, +text.slice(6, 8), +text.slice(9, 11), +text.slice(11, 13), +text.slice(13, 15));
+    dav.handler = (req) => {
+      if (req.method !== 'REPORT') return null;
+      const [, from, to] = /start="(\w+)" end="(\w+)"/.exec(req.body)!;
+      calls++;
+      return calendarObjects(events
+        .filter((e) => {
+          const end = e.start + e.minutes * 60_000;
+          return e.start < when(to) && end > when(from);
+        })
+        .sort((a, b) => ((a.uid.charCodeAt(a.uid.length - 1) * calls) % 7) - ((b.uid.charCodeAt(b.uid.length - 1) * calls) % 7))
+        .map((e) => ({
+          href: `/calendars/u1/Perso/${e.uid}.ics`,
+          ical: ical(['BEGIN:VEVENT', `UID:${e.uid}`, 'DTSTAMP:20260101T000000Z', `SUMMARY:${e.uid}`, `DTSTART:${basic(e.start)}`, ...(e.minutes ? [`DTEND:${basic(e.start + e.minutes * 60_000)}`] : []), 'END:VEVENT']),
+        })));
+    };
+  };
   const textOf = (r: unknown) => (r as { content: Array<{ text: string }> }).content.map((c) => c.text).join('\n');
 
   /** Every "UID, date" line of a whole walk. */
@@ -75,6 +98,41 @@ describe('walks', () => {
   }
   const range = { when: '2026-11-01 to 2027-01-29' };
   const days = (seen: string[]) => new Set(seen).size;
+
+  describe('against a server that follows the time-range', () => {
+    const uids = (seen: string[]) => seen.map((s) => s.split(' ')[0]).sort();
+
+    it.each([1, 2, 3, 7, 100])('walks events of no duration, at limit %i', async (limit) => {
+      const events = Array.from({ length: 10 }, (_, i) => ({ uid: `z${i}`, start: T0 + i * 3_600_000, minutes: 0 }));
+      serveLikeSabre(events);
+      const seen = await walk('get_events_in_range', { ...range, limit });
+      expect(uids(seen)).toEqual(events.map((e) => e.uid));
+    });
+
+    it('finds an event of no duration at the exact start of the range', async () => {
+      serveLikeSabre([{ uid: 'z', start: new Date(2026, 10, 1).getTime(), minutes: 0 }]);
+      const seen = await walk('get_events_in_range', { when: '2026-11-01 to 2026-11-02' });
+      expect(uids(seen)).toEqual(['z']);
+    });
+
+    it.each([1, 2, 3])('keeps a meeting at the same start as an event of no duration, at limit %i', async (limit) => {
+      serveLikeSabre([
+        { uid: 'a', start: T0, minutes: 30 },
+        { uid: 'b', start: T0 + 3_600_000, minutes: 0 },
+        { uid: 'c', start: T0 + 3_600_000, minutes: 30 },
+        { uid: 'd', start: T0 + 7_200_000, minutes: 30 },
+      ]);
+      const seen = await walk('get_events_in_range', { ...range, limit });
+      expect(uids(seen)).toEqual(['a', 'b', 'c', 'd']);
+    });
+
+    it.each([1, 7])('walks simultaneous events the server returns in any order, at limit %i', async (limit) => {
+      const events = Array.from({ length: 40 }, (_, i) => ({ uid: `s${String(i).padStart(2, '0')}`, start: T0, minutes: 30 }));
+      serveLikeSabre(events);
+      const seen = await walk('get_events_in_range', { ...range, limit });
+      expect(uids(seen)).toEqual(events.map((e) => e.uid));
+    });
+  });
 
   it.each([1, 2, 7, 50])('a series of 90 days with a cancelled day gives 89, at limit %i', async (limit) => {
     serve(ical(master(90), cancelled(10)));

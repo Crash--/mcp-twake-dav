@@ -389,7 +389,7 @@ export function getEventsWithRecurrenceExpansion(
           end.setDate(end.getDate() + Math.round(duration / 86400000));
           return end;
         };
-        const overlaps = (start: Date, end: Date) => end > startDate && start < endDate;
+        const overlaps = (start: Date, end: Date) => (end > startDate || start >= startDate) && start < endDate;
 
         // Create EventDTO for each occurrence (preserving original fields, updating dates)
         for (const occurrenceDate of occurrences) {
@@ -448,7 +448,7 @@ export function getEventsWithRecurrenceExpansion(
       }
     } else {
       // Non-recurring event: include if it overlaps the time range (a multi-day event started earlier counts)
-      if (eventDTO.endDate > startDate && eventDTO.startDate < endDate) {
+      if ((eventDTO.endDate > startDate || eventDTO.startDate >= startDate) && eventDTO.startDate < endDate) {
         allEvents.push(eventDTO);
       }
     }
@@ -507,9 +507,10 @@ export function checkWindow(timeRange: TimeRange, cursor?: EventCursor): string 
 
 /** The query window of a page: earlier events of the range were returned by earlier pages. */
 export function pageWindow(timeRange: TimeRange, cursor?: EventCursor): TimeRange {
-  return cursor && Date.parse(cursor.start) > Date.parse(timeRange.start)
-    ? { start: cursor.start, end: timeRange.end }
-    : timeRange;
+  const start = Math.max(Date.parse(timeRange.start), cursor ? Date.parse(cursor.start) : -Infinity);
+  // One second earlier: sabre leaves out an event of no duration that starts exactly at the
+  // start of a time-range. What comes back before the range or the cursor is filtered here.
+  return { start: new Date(start - 1000).toISOString(), end: timeRange.end };
 }
 
 /**
