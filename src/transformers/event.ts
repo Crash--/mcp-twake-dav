@@ -11,6 +11,12 @@ import type { DAVCalendarObject } from 'tsdav';
 import type { AttendeeInfo, EventDTO } from '../types/dtos.js';
 import { registerTimezones } from './timezone.js';
 
+/** The master of a series wherever it is in the object, or else the first VEVENT. */
+export function findMasterVevent(comp: ICAL.Component): ICAL.Component | null {
+  const vevents = comp.getAllSubcomponents('vevent');
+  return vevents.find((v: ICAL.Component) => !v.hasProperty('recurrence-id')) ?? vevents[0] ?? null;
+}
+
 /**
  * Transform a CalDAV calendar object into a typed EventDTO
  *
@@ -41,7 +47,7 @@ export function transformCalendarObject(
     registerTimezones(comp, logger);
 
     // Extract VEVENT component
-    const vevent = comp.getFirstSubcomponent('vevent');
+    const vevent = findMasterVevent(comp);
     if (!vevent) {
       logger.debug({ url: davObject.url }, 'No VEVENT component found in iCalendar data');
       return null;

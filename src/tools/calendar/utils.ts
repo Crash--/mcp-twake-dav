@@ -19,7 +19,7 @@ import type { DAVCalendarObject } from 'tsdav';
 import type { CalendarService, TimeRange } from '../../caldav/calendar-service.js';
 import type { EventDTO, FreeBusyPeriod } from '../../types/dtos.js';
 import { addReadWarning, hasPartialRead } from '../../caldav/dav-fetch.js';
-import { transformCalendarObject } from '../../transformers/event.js';
+import { findMasterVevent, transformCalendarObject } from '../../transformers/event.js';
 import { expandRecurringEvent } from '../../transformers/recurrence.js';
 
 /**
@@ -351,27 +351,26 @@ export function getEventsWithRecurrenceExpansion(
     }
 
     // Handle recurring events
-    if (eventDTO.isRecurring) {
+    if (eventDTO.isRecurring || eventDTO._raw.includes('RECURRENCE-ID')) {
       try {
         // Parse _raw iCalendar to get VEVENT component
         const jCalData = ICAL.parse(eventDTO._raw);
         const comp = new ICAL.Component(jCalData);
-        const vevent = comp.getFirstSubcomponent('vevent');
 
-        if (!vevent) {
-          logger.warn({ uid: eventDTO.uid }, 'Recurring event missing VEVENT component');
-          continue;
-        }
-
-        // Collect all VEVENT exceptions (those with RECURRENCE-ID)
-        // This handles cancelled instances (STATUS=CANCELLED) that use RECURRENCE-ID instead of EXDATE
+        // A VEVENT with a RECURRENCE-ID replaces one occurrence, wherever it is in the object.
+        // An attendee invited to single occurrences receives no master at all.
         const allVevents = comp.getAllSubcomponents('vevent');
+        const vevent = allVevents.find((v: ICAL.Component) => !v.hasProperty('recurrence-id'));
         const exceptions = allVevents.filter(
           (v: ICAL.Component) => v.hasProperty('recurrence-id')
         );
 
-        // Create ICAL.Event with explicit exceptions
-        const icalEvent = new ICAL.Event(vevent, { exceptions });
+        // By instant: ical.js matches exceptions by the text of RECURRENCE-ID, which with a
+        // TZID, as Twake Calendar writes it, is a local time that an occurrence in UTC never equals.
+        const exceptionAt = new Map<number, ICAL.Component>();
+        for (const exception of exceptions) {
+          exceptionAt.set(new ICAL.Event(exception).recurrenceId.toJSDate().getTime(), exception);
+        }
 
         // Calculate event duration for occurrence generation
         const duration = eventDTO.endDate.getTime() - eventDTO.startDate.getTime();
@@ -379,11 +378,11 @@ export function getEventsWithRecurrenceExpansion(
         // Expand recurring event with time range boundaries. Occurrences that started before
         // the range but are still running inside it count too (multi-day all-day markers,
         // a meeting already started at the range start).
-        const expanded = expandRecurringEvent(vevent, {
+        const expanded = vevent ? expandRecurringEvent(vevent, {
           maxOccurrences: MAX_OCCURRENCES_PER_SERIES + 1,
           maxDate: endDate,
           startDate: new Date(startDate.getTime() - duration),
-        });
+        }) : [];
         const occurrences = expanded.slice(0, MAX_OCCURRENCES_PER_SERIES);
         if (expanded.length > MAX_OCCURRENCES_PER_SERIES && !options.earliestOnly) {
           addReadWarning(`The series ${eventDTO.uid} has more than ${MAX_OCCURRENCES_PER_SERIES} occurrences in this range, and the later ones are not listed.`);
@@ -399,50 +398,41 @@ export function getEventsWithRecurrenceExpansion(
 
         // Create EventDTO for each occurrence (preserving original fields, updating dates)
         for (const occurrenceDate of occurrences) {
-          // Check if this occurrence has an exception (RECURRENCE-ID)
-          // This handles cancelled instances that use RECURRENCE-ID + STATUS=CANCELLED
-          // IMPORTANT: Use 'true' to create UTC time, matching the RECURRENCE-ID format
-          const occurrenceTime = ICAL.Time.fromJSDate(occurrenceDate, true);
-          const details = icalEvent.getOccurrenceDetails(occurrenceTime);
+          // Those with an exception are read below
+          if (exceptionAt.has(occurrenceDate.getTime())) continue;
 
-          // If this occurrence has an exception, check if it's cancelled
-          if (details.item !== icalEvent) {
-            // This occurrence has a RECURRENCE-ID exception
-            const exceptionVevent = details.item.component;
-            const exceptionStatus = exceptionVevent.getFirstPropertyValue('status');
-            if (exceptionStatus && String(exceptionStatus).toUpperCase() === 'CANCELLED') {
-              // Skip cancelled instances
-              logger.debug(
-                { uid: eventDTO.uid, date: occurrenceDate.toISOString() },
-                'Skipping cancelled recurring instance (RECURRENCE-ID + STATUS=CANCELLED)'
-              );
-              continue;
-            }
+          const occurrenceEnd = occurrenceEndOf(occurrenceDate);
+          if (!overlaps(occurrenceDate, occurrenceEnd)) continue;
 
-            // For non-cancelled exceptions, use the exception's dates and summary
-            const exceptionEvent = details.item;
-            if (!overlaps(details.startDate.toJSDate(), details.endDate.toJSDate())) continue;
-            allEvents.push({
-              ...eventDTO,
-              summary: exceptionEvent.summary || eventDTO.summary,
-              description: exceptionEvent.description || eventDTO.description,
-              location: exceptionEvent.location || eventDTO.location,
-              startDate: details.startDate.toJSDate(),
-              endDate: details.endDate.toJSDate(),
-              status: exceptionStatus ? String(exceptionStatus).toUpperCase() : eventDTO.status,
-            });
-          } else {
-            // Normal occurrence (no exception)
-            const occurrenceEnd = occurrenceEndOf(occurrenceDate);
-            if (!overlaps(occurrenceDate, occurrenceEnd)) continue;
+          allEvents.push({
+            ...eventDTO,
+            startDate: occurrenceDate,
+            endDate: occurrenceEnd,
+            // Keep other fields (summary, location, attendees, etc.) from original
+          });
+        }
 
-            allEvents.push({
-              ...eventDTO,
-              startDate: occurrenceDate,
-              endDate: occurrenceEnd,
-              // Keep other fields (summary, location, attendees, etc.) from original
-            });
+        // Each one belongs to the range of its new date, whatever the date it replaces.
+        for (const exception of exceptions) {
+          const status = exception.getFirstPropertyValue('status');
+          if (status && String(status).toUpperCase() === 'CANCELLED') {
+            logger.debug({ uid: eventDTO.uid }, 'Skipping cancelled recurring instance (RECURRENCE-ID + STATUS=CANCELLED)');
+            continue;
           }
+          const moved = new ICAL.Event(exception);
+          const start = moved.startDate.toJSDate();
+          const end = moved.endDate.toJSDate();
+          if (!overlaps(start, end)) continue;
+          allEvents.push({
+            ...eventDTO,
+            summary: moved.summary || eventDTO.summary,
+            description: moved.description || eventDTO.description,
+            location: moved.location || eventDTO.location,
+            startDate: start,
+            endDate: end,
+            allDay: moved.startDate.isDate,
+            status: status ? String(status).toUpperCase() : eventDTO.status,
+          });
         }
       } catch (err) {
         logger.error(
@@ -672,7 +662,7 @@ export function computeBusyPeriods(
     try {
       const jcalData = ICAL.parse(event._raw);
       const comp = new ICAL.Component(jcalData);
-      const vevent = comp.getFirstSubcomponent('vevent');
+      const vevent = findMasterVevent(comp);
 
       if (!vevent) {
         continue;

@@ -4,6 +4,9 @@ All notable changes to mcp-twake-dav are documented here. The format follows [Ke
 
 ## [Unreleased]
 
+### Fixed
+- An occurrence moved or cancelled with a `RECURRENCE-ID;TZID`, as Twake Calendar writes it, is read at its new time or left out, instead of being listed at its old time. An exception placed before the master no longer hides the series, and an occurrence moved from outside the range is listed.
+
 ## [4.2.0] - 2026-11-02
 
 ### Fixed
